@@ -155,7 +155,7 @@ impl Protocol {
     /// Bind a UDP socket, turn it into an Interface, and then register it with a new instance of
     /// Protocol.
     ///
-    /// ```
+    /// ```no_run
     /// extern crate mdp;
     /// extern crate tokio;
     /// use std::net::SocketAddr;
