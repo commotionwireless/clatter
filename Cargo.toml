@@ -1,14 +1,3 @@
-[package]
-name = "clatter"
-version = "0.1.0"
-authors = ["Josh King <jking@chambana.net>"]
+[workspace]
 
-[dependencies]
-nom = "^3.2"
-bytes = "0.4.4"
-sodiumoxide = "0.0.14"
-bitflags = "0.8.2"
-time = "0.1"
-libc = "0.2.21"
-futures = "0.1.13"
-petgraph = "0.4.8"
+members = ["mdp", "msp"]

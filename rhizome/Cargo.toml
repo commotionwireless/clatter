@@ -1,0 +1,6 @@
+[package]
+name = "rhizome"
+version = "0.1.0"
+authors = ["Josh King <jking@chambana.net>"]
+
+[dependencies]

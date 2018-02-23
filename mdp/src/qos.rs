@@ -1,0 +1,450 @@
+use std::vec::Vec;
+use std::collections::BinaryHeap;
+use std::collections::binary_heap::Iter;
+use std::ops::{Index, IndexMut};
+use std::cmp::Ordering;
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
+use error::{Error, Result};
+use packet::Packet;
+use addr::Addr;
+use util::BitMask;
+
+const MAX_LENGTH: usize = 100;
+const MAX_QUEUES: usize = 5;
+
+#[derive(Debug)]
+pub(crate) enum QueuedState {
+    Unsent(i8),
+    Sent { seq: i8, dst: RefCell<Vec<Addr>> },
+}
+
+#[derive(Debug)]
+pub(crate) struct QueuedInfo {
+    send_at: Instant,
+    enqueued_at: Instant,
+    state: QueuedState,
+}
+
+impl QueuedInfo {
+    pub fn state(&self) -> &QueuedState {
+        &self.state
+    }
+}
+
+struct QueuedPacket {
+    inner: RefCell<Option<Packet>>,
+    info: QueuedInfo,
+}
+
+impl QueuedPacket {
+    fn new(packet: Packet, info: QueuedInfo) -> QueuedPacket {
+        QueuedPacket {
+            inner: RefCell::new(Some(packet)),
+            info: info,
+        }
+    }
+
+    fn unsent(packet: Packet, iface: i8, send_in: u64) -> QueuedPacket {
+        let now = Instant::now();
+        QueuedPacket::new(
+            packet,
+            QueuedInfo {
+                send_at: now + Duration::from_millis(send_in),
+                enqueued_at: now,
+                state: QueuedState::Unsent(iface),
+            },
+        )
+    }
+
+    fn sent(packet: Packet, send_in: Duration, seq: i8, dst: Vec<Addr>) -> QueuedPacket {
+        let now = Instant::now();
+        QueuedPacket::new(
+            packet,
+            QueuedInfo {
+                send_at: now + send_in,
+                enqueued_at: now,
+                state: QueuedState::Sent {
+                    seq: seq,
+                    dst: RefCell::new(dst),
+                },
+            },
+        )
+    }
+}
+
+impl PartialEq for QueuedPacket {
+    fn eq(&self, other: &QueuedPacket) -> bool {
+        self.info.send_at.eq(&other.info.send_at)
+    }
+}
+
+impl Eq for QueuedPacket {}
+
+impl PartialOrd for QueuedPacket {
+    fn partial_cmp(&self, other: &QueuedPacket) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for QueuedPacket {
+    fn cmp(&self, other: &QueuedPacket) -> Ordering {
+        other.info.send_at.cmp(&self.info.send_at)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Class {
+    Voice = 0,
+    Management = 1,
+    Video = 2,
+    Ordinary = 3,
+    Opportunistic = 4,
+}
+
+impl Index<Class> for Queue {
+    type Output = Bucket;
+
+    fn index(&self, index: Class) -> &Bucket {
+        &self.buckets[index as usize]
+    }
+}
+
+impl IndexMut<Class> for Queue {
+    fn index_mut(&mut self, index: Class) -> &mut Bucket {
+        &mut self.buckets[index as usize]
+    }
+}
+
+pub(crate) struct Bucket {
+    packets: BinaryHeap<QueuedPacket>,
+    max_length: usize,
+    max_latency: Duration,
+}
+
+impl Bucket {
+    fn new() -> Bucket {
+        Bucket {
+            packets: BinaryHeap::new(),
+            max_length: MAX_LENGTH,
+            max_latency: Duration::from_millis(0),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.packets.len()
+    }
+
+    fn iter(&self) -> Iter<QueuedPacket> {
+        self.packets.iter()
+    }
+
+    fn try_push(&mut self, p: QueuedPacket) -> Result<()> {
+        if self.len() >= self.max_length {
+            Err(Error::QueueCongestion)
+        } else {
+            Ok(self.packets.push(p))
+        }
+    }
+}
+
+pub(crate) struct Queue {
+    buckets: Vec<Bucket>,
+    index: u8,
+}
+
+impl Queue {
+    pub fn new() -> Queue {
+        let mut queue = Queue {
+            buckets: (0..MAX_QUEUES).map(|_| Bucket::new()).collect(),
+            index: 0,
+        };
+        queue[Class::Voice].max_length = 20;
+        queue[Class::Voice].max_latency = Duration::from_millis(200);
+        queue[Class::Video].max_latency = Duration::from_millis(200);
+        queue
+    }
+
+    pub fn schedule(&mut self, p: Packet, iface: i8, ms: u64) -> Result<()> {
+        if let Some(b) = self.buckets.get_mut(p.qos as usize) {
+            b.try_push(QueuedPacket::unsent(p, iface, ms))
+        } else {
+            Err(Error::QueueCongestion)
+        }
+    }
+
+    pub fn reschedule(&mut self, p: Packet, ms: Duration, seq: i8, dst: Vec<Addr>) -> Result<()> {
+        debug!("Rescheduled packet {} for resending in {:?} ms.", seq, ms);
+        if let Some(b) = self.buckets.get_mut(p.qos as usize) {
+            b.try_push(QueuedPacket::sent(p, ms, seq, dst))
+        } else {
+            Err(Error::QueueCongestion)
+        }
+    }
+
+    pub fn requeue(&mut self, p: Packet, q: QueuedInfo) -> Result<()> {
+        if let Some(b) = self.buckets.get_mut(p.qos as usize) {
+            b.try_push(QueuedPacket::new(p, q))
+        } else {
+            Err(Error::QueueCongestion)
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.buckets.iter().fold(0, |len, q| len + q.len())
+    }
+
+    fn try_next(&mut self, tries: u8) -> Option<(Packet, QueuedInfo)> {
+        let len = self.buckets.len();
+        if tries as usize >= len {
+            return None;
+        }
+        if self.index as usize >= len {
+            self.index = 0;
+        }
+        let max_latency = self.buckets[self.index as usize].max_latency;
+        let zero = Duration::new(0, 0);
+        match self.buckets[self.index as usize].packets.pop() {
+            Some(QueuedPacket { inner: c, info: i }) => {
+                if let Some(p) = c.into_inner() {
+                    let now = Instant::now();
+                    if max_latency > zero && i.enqueued_at + max_latency < now {
+                        debug!("Dropping outgoing message due to timeout.");
+                        self.index += 1;
+                        self.try_next(tries + 1)
+                    } else if i.send_at > now {
+                        debug!(
+                            "Requeueing outgoing message due at {:?} (it is now {:?}).",
+                            i.send_at, now
+                        );
+                        let _ = self.requeue(p, i)
+                            .map_err(|e| error!("Error requeueing message for sending: {:?}", e));
+                        self.index += 1;
+                        self.try_next(tries + 1)
+                    } else {
+                        debug!(
+                            "Popping outgoing message from queue for delivery with state {:?}.",
+                            i.state
+                        );
+                        Some((p, i))
+                    }
+                } else {
+                    self.index += 1;
+                    self.try_next(tries + 1)
+                }
+            }
+            _ => {
+                self.index += 1;
+                self.try_next(tries + 1)
+            }
+        }
+    }
+
+    pub fn ack(
+        &mut self,
+        neighbor: &Addr,
+        ack_seq: i8,
+        ack_mask: u32,
+    ) -> Option<(Duration, Duration)> {
+        debug!(
+            "Received ACK for frame with sequence {} from neighbor {:?}.",
+            ack_seq, neighbor
+        );
+        let zero = Duration::new(0, 0);
+        let mut min_rtt = Duration::new(0, 0);
+        let mut max_rtt = Duration::new(0, 0);
+        let mut acked = false;
+        for ref mut b in &mut self.buckets {
+            for p in b.iter() {
+                if b.max_latency > zero && p.info.enqueued_at + b.max_latency < Instant::now() {
+                    debug!("Timing out frame with sequence {}.", ack_seq);
+                    *p.inner.borrow_mut() = None;
+                }
+                match p.info.state {
+                    QueuedState::Sent { seq, ref dst } => {
+                        let mut dst = dst.borrow_mut();
+                        let len = dst.len();
+                        if len > 0 {
+                            if let Ok(index) = dst.binary_search(neighbor) {
+                                debug!("Ack'ing sent frame with sequence {}.", ack_seq);
+                                let delta = (ack_seq - seq).abs();
+                                if delta == 0 || ack_mask.nth_bit_is_set(delta as u32) {
+                                    acked = true;
+                                    dst.swap_remove(index);
+                                    if len == 1 {
+                                        *p.inner.borrow_mut() = None;
+                                    }
+                                    let rtt = p.info.enqueued_at.elapsed();
+                                    if rtt > max_rtt {
+                                        max_rtt = rtt;
+                                    }
+                                    if rtt < min_rtt || min_rtt == zero {
+                                        min_rtt = rtt;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => continue,
+                }
+            }
+        }
+        if acked {
+            debug!("ACK'd frame!");
+            Some((min_rtt, max_rtt))
+        } else {
+            None
+        }
+    }
+}
+
+impl Iterator for Queue {
+    type Item = (Packet, QueuedInfo);
+
+    fn next(&mut self) -> Option<(Packet, QueuedInfo)> {
+        self.try_next(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate env_logger;
+    use super::*;
+    use addr::*;
+    use packet::*;
+    use std::thread::sleep;
+
+    #[test]
+    fn queue_order() {
+        let _ = env_logger::try_init();
+        let mut queue = Queue::new();
+        let s1 = LocalAddr::new();
+        let s2 = LocalAddr::new();
+        let s3 = LocalAddr::new();
+        let p1 = Packet::new(
+            (&s1, 1),
+            (&s3, 1),
+            &s2,
+            10,
+            QOS_DEFAULT,
+            0,
+            false,
+            "Packet1".as_bytes(),
+        );
+        let p2 = Packet::new(
+            (&s1, 1),
+            (&s2, 1),
+            &s2,
+            10,
+            Class::Management,
+            0,
+            false,
+            "Packet2".as_bytes(),
+        );
+        let p3 = Packet::new(
+            (&s1, 1),
+            (&s2, 1),
+            &s2,
+            10,
+            QOS_DEFAULT,
+            0,
+            false,
+            "Packet3".as_bytes(),
+        );
+        let p1c = p1.clone();
+        let p2c = p2.clone();
+        let p3c = p3.clone();
+        queue.schedule(p1, 0, 3).unwrap();
+        queue.schedule(p2, 0, 2).unwrap();
+        queue.schedule(p3, 0, 1).unwrap();
+        sleep(Duration::from_millis(4));
+        let (p2d, _) = queue.next().unwrap();
+        let (p3d, _) = queue.next().unwrap();
+        let (p1d, _) = queue.next().unwrap();
+        println!("p1d: {:?}", p1d);
+        println!("p2d: {:?}", p2d);
+        println!("p3d: {:?}", p3d);
+        println!("first: {:?}", p2d);
+        println!("second: {:?}", p3d);
+        println!("third: {:?}", p1d);
+        assert!(p1d.equiv(&p1c) && p2c.equiv(&p2d) && p3c.equiv(&p3d))
+    }
+
+    #[test]
+    fn queue_ack() {
+        let _ = env_logger::try_init();
+        let mut queue = Queue::new();
+        let s1 = LocalAddr::new();
+        let s2 = LocalAddr::new();
+        let s3 = LocalAddr::new();
+        let p1 = Packet::new(
+            (&s1, 1),
+            (&s3, 1),
+            &s2,
+            10,
+            QOS_DEFAULT,
+            0,
+            false,
+            "Packet1".as_bytes(),
+        );
+        let p2 = Packet::new(
+            (&s1, 1),
+            (&s2, 1),
+            &s2,
+            10,
+            Class::Management,
+            12,
+            false,
+            "Packet2".as_bytes(),
+        );
+        let p3 = Packet::new(
+            (&s1, 1),
+            (&s2, 1),
+            &s2,
+            10,
+            QOS_DEFAULT,
+            42,
+            false,
+            "Packet3".as_bytes(),
+        );
+        let p1c = p1.clone();
+        let dst = Addr::from(&s2);
+        queue
+            .reschedule(p1, Duration::from_millis(1), 0, vec![dst])
+            .unwrap();
+        queue
+            .reschedule(p2, Duration::from_millis(1), 12, vec![dst])
+            .unwrap();
+        queue
+            .reschedule(p3, Duration::from_millis(1), 42, vec![dst])
+            .unwrap();
+        queue.ack(&dst, 12, 0);
+        queue.ack(&dst, 13, 268435456);
+        sleep(Duration::from_millis(2));
+        let (p1d, _) = queue.next().unwrap();
+        let p2d = queue.next();
+        info!("p1d: {:?}", p1d);
+        assert!(p1d.equiv(&p1c) && p2d.is_none())
+    }
+
+    #[test]
+    fn queue_timeout() {
+        let _ = env_logger::try_init();
+        let mut queue = Queue::new();
+        let s1 = LocalAddr::new();
+        let p1 = Packet::new(
+            (&s1, 1),
+            (&s1, 1),
+            &s1,
+            10,
+            Class::Voice,
+            0,
+            false,
+            "Packet1".as_bytes(),
+        );
+        queue.schedule(p1, 0, 0).unwrap();
+        sleep(Duration::from_millis(201));
+        let p1d = queue.next();
+        assert!(p1d.is_none())
+    }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "msp"
+version = "0.1.0"
+authors = ["Josh King <jking@chambana.net>"]
+
+[dependencies]
+mdp = { path = "../mdp" }
+futures = "0.1"
+nom = "^3.2"
+bytes = "0.4"
+bitflags = "1.0"
+log = "0.4"
