@@ -41,7 +41,7 @@ pub const TTL_DEFAULT: u8 = 31;
 /// use mdp::protocol::Protocol;
 ///
 /// let local_addr = LocalAddr::new();
-/// let proto = Protocol::new(&local_addr);
+/// let mut proto = Protocol::new(&local_addr);
 /// let socket0 = proto.bind(&local_addr, 5000).expect("Failed to bind MDP socket.");
 /// let new_addr = LocalAddr::new();
 /// let socket1= proto.bind(&new_addr, 5001).expect("Failed to bind MDP socket.");

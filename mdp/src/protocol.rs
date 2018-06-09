@@ -193,7 +193,7 @@ impl Protocol {
     /// use mdp::protocol::Protocol;
     ///
     /// let local_addr = LocalAddr::new();
-    /// let proto = Protocol::new(&local_addr);
+    /// let mut proto = Protocol::new(&local_addr);
     /// let socket = proto.bind(&local_addr, 5000).expect("Failed to bind MDP Socket.");
     /// ```
     pub fn bind<'a>(&mut self, addr: &'a LocalAddr, port: u32) -> Result<Socket> {
