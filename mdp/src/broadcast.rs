@@ -75,14 +75,24 @@ impl AsRef<[u8]> for Id {
     }
 }
 
-pub(crate) fn bid_parse(i: &[u8]) -> IResult<&[u8], Id> {
-    let (r, bytes) = try_parse!(i, take!(BIDBYTES));
-    if let Some(x) = Id::from_slice(bytes) {
-        IResult::Done(r, x)
-    } else {
-        IResult::Error(ErrorKind::Custom(42))
-    }
-}
+//pub(crate) fn bid_parse(i: &[u8]) -> IResult<&[u8], Id> {
+//    let (r, bytes) = try_parse!(i, take!(BIDBYTES));
+//    if let Some(x) = Id::from_slice(bytes) {
+//        IResult::Done(r, x)
+//    } else {
+//        IResult::Error(ErrorKind::Custom(42))
+//    }
+//}
+
+named!(pub bid_parse<Id>,
+    do_parse!(
+        bytes: take!(BIDBYTES) >>
+        id: expr_opt!(Id::from_slice(bytes)) >>
+        (id)
+    )
+);
+
+
 
 #[cfg(test)]
 mod tests {

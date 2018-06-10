@@ -1,7 +1,7 @@
 //! Address primitives for working with MDP.
 use libc::c_int;
 use hex_slice::AsHex;
-use nom::{ErrorKind, IResult};
+//use nom::{ErrorKind, IResult};
 use sodiumoxide::crypto::box_;
 use sodiumoxide::crypto::sign;
 pub(crate) use sodiumoxide::crypto::box_::{Nonce, NONCEBYTES};
@@ -314,18 +314,15 @@ impl LocalAddrInfo {
     }
 }
 
-pub(crate) fn address_parse(i: &[u8]) -> IResult<&[u8], Addr> {
-    let (r, bytes) = try_parse!(i, take!(ADDRBYTES));
-    if let Some(x) = sign::PublicKey::from_slice(bytes) {
-        IResult::Done(
-            r,
-            Addr {
-                sign: x,
-                crypt: ed25519_pk_to_curve25519(&x).unwrap(),
-                length: sign::PUBLICKEYBYTES as u8,
-            },
-        )
-    } else {
-        IResult::Error(ErrorKind::Custom(42))
-    }
-}
+named!(pub address_parse<Addr>,
+    do_parse!(
+        bytes: take!(ADDRBYTES) >>
+        sign_key: expr_opt!(sign::PublicKey::from_slice(bytes)) >>
+        crypt_key: expr_res!(ed25519_pk_to_curve25519(&sign_key)) >>
+        (Addr {
+            sign: sign_key,
+            crypt: crypt_key,
+            length: sign::PUBLICKEYBYTES as u8
+        })
+    )
+);

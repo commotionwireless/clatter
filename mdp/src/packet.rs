@@ -1,4 +1,5 @@
 use bytes::{BigEndian, BufMut};
+use nom;
 use nom::{ErrorKind, IResult, be_i8, be_u16, be_u8};
 use std::u16;
 use addr::{address_parse, Addr, LocalAddr, SocketAddr, ADDR_BROADCAST, ADDR_EMPTY, NONCEBYTES,
@@ -23,17 +24,19 @@ bitflags! {
     }
 }
 
-fn ttl_qos_parse(i: &[u8]) -> IResult<&[u8], (u8, qos::Class)> {
-    let (r, (ttl, bytes)) = try_parse!(i, bits!(pair!(take_bits!(u8, 5), take_bits!(u8, 3))));
-    match bytes {
-        0 => IResult::Done(r, (ttl, qos::Class::Voice)),
-        1 => IResult::Done(r, (ttl, qos::Class::Management)),
-        2 => IResult::Done(r, (ttl, qos::Class::Video)),
-        3 => IResult::Done(r, (ttl, qos::Class::Ordinary)),
-        4 => IResult::Done(r, (ttl, qos::Class::Opportunistic)),
-        _ => IResult::Error(ErrorKind::Custom(42)),
-    }
-}
+named!(ttl_qos_parse<(u8, qos::Class)>, 
+    do_parse!(
+        ttl_qos: bits!(pair!(take_bits!(u8, 5), take_bits!(u8, 3))) >>
+        qos: switch!(value!(ttl_qos.1),
+            0 => value!(qos::Class::Voice) |
+            1 => value!(qos::Class::Management) |
+            2 => value!(qos::Class::Video) |
+            3 => value!(qos::Class::Ordinary) |
+            4 => value!(qos::Class::Opportunistic)
+        ) >>
+        (ttl_qos.0, qos)
+    )
+);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum State {
@@ -96,6 +99,7 @@ impl Packet {
             },
         }
     }
+
     pub fn decode<A: Into<Addr>>(buf: &[u8], frame_src: A, single: bool) -> IResult<&[u8], Packet> {
         let (r, bits) = try_parse!(buf, be_u8);
         if let Some(x) = PacketFlags::from_bits(bits) {
@@ -133,8 +137,8 @@ impl Packet {
                 } else {
                     try_parse!(r, be_u16)
                 };
-                match Payload::decode_encrypted(r, len) {
-                    IResult::Done(r, (algo, nonce, data)) => IResult::Done(
+                Payload::decode_encrypted(r, len).map(|(r, (algo, nonce, data))|
+                    (
                         r,
                         Packet {
                             src: src,
@@ -150,12 +154,10 @@ impl Packet {
                                 algo: algo,
                                 nonce: nonce,
                                 data: data,
-                            },
-                        },
-                    ),
-                    IResult::Incomplete(needed) => IResult::Incomplete(needed),
-                    IResult::Error(error) => IResult::Error(error),
-                }
+                            }
+                        }
+                    )
+                )
             } else if flags.contains(PacketFlags::PACKET_SIGNED) {
                 let (r, len) = if single {
                     let len = r.len() - 5 - SIGNATUREBYTES;
@@ -163,8 +165,8 @@ impl Packet {
                 } else {
                     try_parse!(r, be_u16)
                 };
-                match Payload::decode_signed(r, len) {
-                    IResult::Done(r, (algo, src_port, dst_port, sig, data)) => IResult::Done(
+                Payload::decode_signed(r, len).map(|(r, (algo, src_port, dst_port, sig, data))| 
+                    (
                         r,
                         Packet {
                             src: src,
@@ -182,12 +184,10 @@ impl Packet {
                                 dst_port: dst_port,
                                 sig: sig,
                                 data: data,
-                            },
-                        },
-                    ),
-                    IResult::Incomplete(needed) => IResult::Incomplete(needed),
-                    IResult::Error(error) => IResult::Error(error),
-                }
+                            }
+                        }
+                    )
+                )
             } else {
                 let (r, len) = if single {
                     let len = r.len() - 4;
@@ -195,8 +195,8 @@ impl Packet {
                 } else {
                     try_parse!(r, be_u16)
                 };
-                match Payload::decode_plain(r, len) {
-                    IResult::Done(r, (src_port, dst_port, data)) => IResult::Done(
+                Payload::decode_plain(r, len).map(|(r, (src_port, dst_port, data))| 
+                    (
                         r,
                         Packet {
                             src: src,
@@ -212,15 +212,13 @@ impl Packet {
                                 src_port: src_port,
                                 dst_port: dst_port,
                                 data: data,
-                            },
-                        },
-                    ),
-                    IResult::Incomplete(needed) => IResult::Incomplete(needed),
-                    IResult::Error(error) => IResult::Error(error),
-                }
+                            }
+                        }
+                    )
+                )
             }
         } else {
-            IResult::Error(ErrorKind::Custom(42))
+            Err(nom::Err::Error(error_position!(buf, nom::ErrorKind::Custom(42))))
         }
     }
 

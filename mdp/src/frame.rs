@@ -2,6 +2,7 @@ use std::iter::once;
 use std::mem;
 use std::vec::IntoIter;
 use bytes::BufMut;
+use nom;
 use nom::{ErrorKind, IResult, be_i8, be_u8};
 use addr::{address_parse, Addr};
 use error::{Error, Result};
@@ -104,7 +105,7 @@ impl Header {
         let (r, bits) = try_parse!(r, be_u8);
         let flags = match FrameFlags::from_bits(bits) {
             Some(flags) => flags,
-            None => return IResult::Error(ErrorKind::Custom(42)),
+            None => return Err(nom::Err::Error(error_position!(buf, nom::ErrorKind::Custom(42)))),
         };
         let (r, iface): (&[u8], i8) = if flags.contains(FrameFlags::FRAME_INTERFACE) {
             try_parse!(r, be_i8)
@@ -116,17 +117,17 @@ impl Header {
         } else {
             (r, -1)
         };
-        IResult::Done(
+        Ok((
             r,
             Header::new(&src, iface, seq, flags.contains(FrameFlags::FRAME_UNICAST)),
-        )
+        ))
     }
 
     pub fn decode(buf: &[u8]) -> Result<(&[u8], Header)> {
         match Header::decode_header(buf) {
-            IResult::Done(r, header) => Ok((r, header)),
-            IResult::Incomplete(needed) => Err(Error::ParseIncomplete(needed)),
-            IResult::Error(err) => Err(Error::ParseError(err)),
+            Ok((r, header)) => Ok((r, header)),
+            Err(nom::Err::Incomplete(needed)) => Err(Error::ParseIncomplete(needed)),
+            Err(nom::Err::Error(err)) | Err(nom::Err::Failure(err)) => Err(Error::ParseError(err.into_error_kind())),
         }
     }
 }
@@ -212,35 +213,35 @@ impl Frame {
             MAGIC_ENCAP_MULTIPLE => {
                 trace!("Decoding frame ENCAP_MULTIPLE.");
                 let (r, packets) =
-                    try_parse!(r, many1!(apply!(Packet::decode, &header.src, false)));
-                IResult::Done(
+                    try_parse!(r, many1!(complete!(apply!(Packet::decode, &header.src, false))));
+                Ok((
                     r,
                     Frame {
                         header: header,
                         contents: Contents::Multiple(packets),
                     },
-                )
+                ))
             }
             MAGIC_ENCAP_SINGLE => {
                 trace!("Decoding frame ENCAP_SINGLE.");
-                let (r, packet) = try_parse!(r, apply!(Packet::decode, &header.src, true));
-                IResult::Done(
+                let (r, packet) = try_parse!(r, complete!(apply!(Packet::decode, &header.src, true)));
+                Ok((
                     r,
                     Frame {
                         header: header,
                         contents: Contents::Single(packet),
                     },
-                )
+                ))
             }
-            _ => IResult::Error(ErrorKind::Custom(42)),
+            _ => Err(nom::Err::Error(error_position!(buf, nom::ErrorKind::Custom(42))))
         }
     }
 
     pub fn decode<A: AsRef<[u8]>>(buf: A) -> Result<Frame> {
         match Frame::decode_frame(buf.as_ref()) {
-            IResult::Done(_, frame) => Ok(frame),
-            IResult::Incomplete(needed) => Err(Error::ParseIncomplete(needed)),
-            IResult::Error(err) => Err(Error::ParseError(err)),
+            Ok((_, frame)) => Ok(frame),
+            Err(nom::Err::Incomplete(needed)) => Err(Error::ParseIncomplete(needed)),
+            Err(nom::Err::Error(err)) | Err(nom::Err::Failure(err)) => Err(Error::ParseError(err.into_error_kind())),
         }
     }
 
@@ -397,10 +398,10 @@ mod tests {
         let f3 = Frame::encap(p3, &s1, 0, 0);
         f1.extend(f2);
         f1.extend(f3);
-        println!("f1: {:?}", buf);
+        println!("f1: {:?}", f1);
         let f1s = f1.encode(&mut buf).unwrap();
         println!("f1 encoded: {:?}", buf);
-        let f2 = Frame::decode(&buf[..f1s]).unwrap();
+        let f2 = Frame::decode(&buf).unwrap();
         println!("f1 decoded: {:?}", buf);
         let mut v1 = f2.into_iter();
         let p1d = v1.next().unwrap();

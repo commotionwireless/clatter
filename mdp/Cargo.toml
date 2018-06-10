@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Josh King <jking@chambana.net>"]
 
 [dependencies]
-nom = "^3.2"
+nom = "^4.0"
 bytes = "0.4.6"
 sodiumoxide = "0.0.14"
 bitflags = "1.0.1"

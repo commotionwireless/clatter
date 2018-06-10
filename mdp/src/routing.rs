@@ -15,6 +15,7 @@ use std::u32;
 use std::u64;
 use std::vec::IntoIter;
 use bytes::{BigEndian, BufMut};
+use nom;
 use nom::{ErrorKind, IResult, be_i8, be_u32, be_u8};
 
 const ACK_WINDOW_FRAME: u32 = 32;
@@ -157,7 +158,7 @@ impl Link {
         let (r, bits) = try_parse!(r, be_u8);
         let flags = match LinkFlags::from_bits(bits) {
             Some(flags) => flags,
-            None => return IResult::Error(ErrorKind::Custom(42)),
+            None => return Err(nom::Err::Error(error_position!(buf, nom::ErrorKind::Custom(42)))),
         };
         let (r, rx): (&[u8], Addr) = try_parse!(r, address_parse);
         let (r, version) = try_parse!(r, be_i8);
@@ -181,19 +182,17 @@ impl Link {
         } else {
             (r, -1)
         };
-        IResult::Done(
+        Ok((
             r,
             LinkState(rx, tx, version, iface, ack_seq, ack_mask, drop_rate),
-        )
+        ))
     }
 
     pub(crate) fn decode_links(buf: &[u8]) -> Result<IntoIter<LinkState>> {
         match many1!(buf, Link::decode_link_payload) {
-            IResult::Done(_, links) => {
-                Ok(links.into_iter())
-            }
-            IResult::Incomplete(needed) => Err(Error::ParseIncomplete(needed)),
-            IResult::Error(err) => Err(Error::ParseError(err)),
+            Ok((_, links)) => Ok(links.into_iter()),
+            Err(nom::Err::Incomplete(needed)) => Err(Error::ParseIncomplete(needed)),
+            Err(nom::Err::Error(err)) | Err(nom::Err::Failure(err)) => Err(Error::ParseError(err.into_error_kind())),
         }
     }
 }

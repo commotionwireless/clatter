@@ -39,8 +39,8 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Error::Io(ref err) => err.fmt(f),
-            Error::ParseError(ref err) => err.fmt(f),
+            Error::Io(ref err) => fmt::Display::fmt(err, f),
+            Error::ParseError(ref err) => fmt::Debug::fmt(err, f),
             Error::ParseIncomplete(i) => match i {
                 nom::Needed::Unknown => {
                     write!(f, "Missing unknown amount of bytes while deserializing.")
@@ -145,7 +145,7 @@ impl error::Error for Error {
     fn cause(&self) -> Option<&error::Error> {
         match *self {
             Error::Io(ref err) => Some(err),
-            Error::ParseError(ref err) => Some(err),
+            Error::ParseError(_) => None,
             Error::ParseIncomplete(_) => None,
             Error::PacketNeedsPlain => None,
             Error::PacketNeedsEncrypted => None,
@@ -176,6 +176,15 @@ impl error::Error for Error {
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error {
         Error::Io(err)
+    }
+}
+
+impl<'a> From<nom::Err<&'a [u8]>> for Error {
+    fn from(err: nom::Err<&'a [u8]>) -> Error {
+        match err {
+            nom::Err::Incomplete(needed) => Error::ParseIncomplete(needed),
+            nom::Err::Error(e) | nom::Err::Failure(e) => Error::ParseError(e.into_error_kind())
+        }
     }
 }
 
