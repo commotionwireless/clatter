@@ -1,11 +1,9 @@
-use std::iter::once;
-use std::mem;
-use std::vec::IntoIter;
-use bytes::BufMut;
-use nom;
-use nom::{ErrorKind, IResult, be_i8, be_u8};
+use std::{iter::once, mem, ops::{Deref, DerefMut}, vec::IntoIter};
+use cookie_factory::GenError;
+use nom::{self, IResult, be_i8, be_u8};
+
 use addr::{address_parse, Addr};
-use error::{Error, Result};
+use error::{Error, Result, GResult};
 use packet::Packet;
 
 const MAGIC_VERSION: [u8; 1] = [1];
@@ -77,7 +75,7 @@ impl Header {
         length
     }
 
-    pub fn encode<B: BufMut>(&self, buf: &mut B) -> usize {
+    pub fn encode<'b>(&self, buf: (&'b mut [u8], usize)) -> GResult<(&'b mut [u8], usize)> {
         let mut flags = FrameFlags { bits: 0 };
         if self.iface >= 0 {
             flags.insert(FrameFlags::FRAME_INTERFACE)
@@ -88,18 +86,15 @@ impl Header {
         if self.unicast {
             flags.insert(FrameFlags::FRAME_UNICAST)
         };
-        let before: usize = buf.remaining_mut();
-        buf.put_slice(self.src.as_ref());
-        buf.put_u8(flags.bits);
-        if self.iface >= 0 {
-            buf.put_i8(self.iface);
-        };
-        if self.seq >= 0 {
-            buf.put_i8(self.seq);
-        };
-        before - buf.remaining_mut()
+        do_gen!(
+            buf,
+            gen_slice!(self.src.as_ref()) >>
+            gen_be_u8!(flags.bits) >>
+            gen_cond!(self.iface >= 0, gen_be_i8!(self.iface)) >>
+            gen_cond!(self.seq >= 0, gen_be_i8!(self.seq))
+        )
     }
-
+    
     fn decode_header<'a>(buf: &'a [u8]) -> IResult<&'a [u8], Header> {
         let (r, src): (&[u8], Addr) = try_parse!(buf, address_parse);
         let (r, bits) = try_parse!(r, be_u8);
@@ -139,27 +134,27 @@ pub enum Contents {
 }
 
 impl Contents {
-    pub(crate) fn encode_single<B: BufMut>(&self, encap_src: &Addr, buf: &mut B) -> Result<usize> {
+    fn encode_contents<'b>(&self, encap_src: &Addr, buf: (&'b mut [u8], usize)) -> GResult<(&'b mut [u8], usize)> {
         match *self {
             Contents::Single(ref packet) => packet.encode(encap_src, true, buf),
-            Contents::Multiple(ref packets) => packets
-                .iter()
-                .map(|p| p.encode(encap_src, false, buf))
-                .sum(),
+            Contents::Multiple(ref packets) => {
+                let encoder = |buf: (&'b mut [u8], usize), p: &Packet| p.encode(encap_src, false, buf);
+                do_gen!(
+                    buf,
+                    gen_many_ref!(packets.iter(), encoder)
+                )
+            }
         }
     }
 
-    pub(crate) fn encode_multiple<B: BufMut>(
-        &self,
-        encap_src: &Addr,
-        buf: &mut B,
-    ) -> Result<usize> {
-        match *self {
-            Contents::Single(ref packet) => packet.encode(encap_src, false, buf),
-            Contents::Multiple(ref packets) => packets
-                .iter()
-                .map(|p| p.encode(encap_src, false, buf))
-                .sum(),
+    pub fn encode<B: AsMut<[u8]> + Deref<Target=[u8]>>(&self, encap_src: &Addr, buf: &mut B) -> Result<usize> {
+        let start = buf.len();
+        match self.encode_contents(encap_src, (buf.as_mut(), start)).map(|b| b.1) {
+            Ok(end) => {
+                trace!("Encoded frame of size {}.", end - start);
+                Ok(end)
+            },
+            Err(err) => Err(Error::EncodeError(err))
         }
     }
 
@@ -245,15 +240,30 @@ impl Frame {
         }
     }
 
-    pub fn encode<B: BufMut>(&self, buf: &mut B) -> Result<usize> {
-        buf.put_u8(MAGIC_VERSION[0]);
-        match self.contents {
-            Contents::Multiple(_) => buf.put_u8(MAGIC_ENCAP_MULTIPLE),
-            Contents::Single(_) => buf.put_u8(MAGIC_ENCAP_SINGLE),
+    fn encode_frame<'b>(&self, buf: (&'b mut [u8], usize)) -> GResult<(&'b mut [u8], usize)> {
+        let header_encode = |b: (&'b mut [u8], usize)| self.header.encode(b);
+        let contents_encode = |b: (&'b mut [u8], usize), tx: &Addr| self.contents.encode_contents(tx, b);
+        let single = match self.contents {
+            Contents::Single(_) => true,
+            Contents::Multiple(_) => false
+        };
+        do_gen!(
+            buf,
+            gen_be_u8!(MAGIC_VERSION[0]) >>
+            gen_if_else!(single, gen_be_u8!(MAGIC_ENCAP_SINGLE), gen_be_u8!(MAGIC_ENCAP_MULTIPLE)) >>
+            gen_call!(header_encode) >>
+            gen_call!(contents_encode, &self.header.src)
+        )
+    }
+
+    pub fn encode<B: AsMut<[u8]> + DerefMut<Target=[u8]>>(&self, buf: &mut B) -> Result<usize> {
+        match self.encode_frame((buf, 0)).map(|b| b.1) {
+            Ok(end) => {
+                trace!("Encoded frame of size {}.", end);
+                Ok(end)
+            },
+            Err(err) => Err(Error::EncodeError(err))
         }
-        let mut w: usize = 2 + self.header.encode(buf);
-        w += self.contents.encode_single(&self.header.src, buf)?;
-        Ok(w)
     }
 
     pub fn len(&self) -> usize {
@@ -311,14 +321,14 @@ mod tests {
             false,
             "Packet1".as_bytes(),
         );
-        let mut buf = vec![];
+        let mut buf = vec![0; 250];
         println!("p1: {:?}", p1);
         let p2 = p1.clone();
         let f1 = Frame::encap(p1, &s1, 0, 0);
         println!("f1: {:?}", f1);
-        f1.encode(&mut buf).unwrap();
+        let wr = f1.encode(&mut buf).unwrap();
         println!("f1 encoded: {:?}", buf);
-        let f2 = Frame::decode(buf).unwrap();
+        let f2 = Frame::decode(&buf[..wr]).unwrap();
         println!("f1 decoded: {:?}", f2);
         let p1d = f2.into_iter().next().unwrap();
         println!("p1d: {:?}", p1d);
@@ -339,12 +349,12 @@ mod tests {
             false,
             "Packet1".as_bytes(),
         );
-        let mut buf = vec![];
+        let mut buf = vec![0; 250];
         let p2 = p1.clone();
         p1.encrypt(&mut s1).unwrap();
         let f1 = Frame::encap(p1, &s1, 0, 0);
-        f1.encode(&mut buf).unwrap();
-        let f2 = Frame::decode(buf).unwrap();
+        let wr = f1.encode(&mut buf).unwrap();
+        let f2 = Frame::decode(&buf[..wr]).unwrap();
         let mut p1d = f2.into_iter().next().unwrap();
         p1d.decrypt(&mut s2).unwrap();
         assert!(p2.equiv(&p1d))
@@ -385,7 +395,7 @@ mod tests {
             false,
             "Packet3".as_bytes(),
         );
-        let mut buf = vec![];
+        let mut buf = vec![0; 1500];
         let p1c = p1.clone();
         let p2c = p2.clone();
         p2.encrypt(&mut s1).unwrap();

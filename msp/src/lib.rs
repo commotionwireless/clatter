@@ -25,7 +25,7 @@ use std::mem;
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use bytes::{BigEndian, BufMut};
+use bytes::BufMut;
 use futures::prelude::*;
 use futures::{Sink, Stream};
 use nom::{IResult, be_u16, be_u8};
@@ -79,9 +79,9 @@ fn encode_message<B: BufMut>(flags: u8, ack_seq: u16, seq: u16, item: &[u8], buf
     let f = MspFlags::from_bits(flags).unwrap_or_else(|| Default::default());
     buf.put_u8(flags);
     if f.contains(MspFlags::MSP_ACK) {
-        buf.put_u16::<BigEndian>(ack_seq);
+        buf.put_u16_be(ack_seq);
     }
-    buf.put_u16::<BigEndian>(seq);
+    buf.put_u16_be(seq);
     buf.put_slice(item.as_ref());
 }
 
@@ -138,7 +138,7 @@ impl Socket {
         flags.insert(MspFlags::MSP_CONNECT);
         let mut buf = vec![];
         buf.put_u8(flags.bits());
-        buf.put_u16::<BigEndian>(1);
+        buf.put_u16_be(1);
         let sent = self.inner.start_send((buf, dst, State::Encrypted));
         let state = match sent {
             Ok(AsyncSink::Ready) => ConnectionState::Waiting(self.inner),

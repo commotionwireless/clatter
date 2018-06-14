@@ -14,9 +14,8 @@ use std::time::{Duration, Instant};
 use std::u32;
 use std::u64;
 use std::vec::IntoIter;
-use bytes::{BigEndian, BufMut};
-use nom;
-use nom::{ErrorKind, IResult, be_i8, be_u32, be_u8};
+use bytes::BufMut;
+use nom::{self, IResult, be_i8, be_u32, be_u8};
 
 const ACK_WINDOW_FRAME: u32 = 32;
 const ACK_WINDOW_PACKET: u32 = 64;
@@ -145,7 +144,7 @@ impl Link {
         };
         if self.ack_seq >= 0 {
             buf.put_i8(self.ack_seq);
-            buf.put_u32::<BigEndian>(self.ack_mask);
+            buf.put_u32_be(self.ack_mask);
         };
         if self.drop_rate >= 0 {
             buf.put_i8(self.drop_rate);

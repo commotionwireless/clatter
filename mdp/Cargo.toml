@@ -5,6 +5,7 @@ authors = ["Josh King <jking@chambana.net>"]
 
 [dependencies]
 nom = "^4.0"
+cookie-factory = "0.2.4"
 bytes = "0.4.6"
 sodiumoxide = "0.0.14"
 bitflags = "1.0.1"

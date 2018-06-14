@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 use std::fmt;
 use hex_slice::AsHex;
-use nom::{ErrorKind, IResult};
 use sodiumoxide::randombytes::randombytes_into;
 
 pub const BIDBYTES: usize = 8;

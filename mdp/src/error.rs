@@ -5,13 +5,14 @@ use std::fmt;
 use std::error;
 use nom;
 use addr::SocketAddr;
-use frame::Frame;
+use cookie_factory::GenError;
 
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
     ParseError(nom::ErrorKind),
     ParseIncomplete(nom::Needed),
+    EncodeError(GenError),
     PacketNeedsPlain,
     PacketNeedsEncrypted,
     PacketNeedsSigned,
@@ -26,7 +27,6 @@ pub enum Error {
     ConvertPublicKey,
     ConvertPrivateKey,
     OverlayInvalidIP,
-    OverlayFrameFull(Frame),
     InvalidInterface,
     InvalidSocket,
     RoutingTableInvalid,
@@ -41,6 +41,7 @@ impl fmt::Display for Error {
         match *self {
             Error::Io(ref err) => fmt::Display::fmt(err, f),
             Error::ParseError(ref err) => fmt::Debug::fmt(err, f),
+            Error::EncodeError(ref err) => fmt::Debug::fmt(err, f),
             Error::ParseIncomplete(i) => match i {
                 nom::Needed::Unknown => {
                     write!(f, "Missing unknown amount of bytes while deserializing.")
@@ -87,9 +88,6 @@ impl fmt::Display for Error {
                 write!(f, "Error transforming private signing key to crypto key.")
             }
             Error::OverlayInvalidIP => write!(f, "Invalid Overlay IP address."),
-            Error::OverlayFrameFull(_) => {
-                write!(f, "Current Overlay frame is too full for this packet.")
-            }
             Error::InvalidInterface => write!(f, "Invalid interface ID."),
             Error::InvalidSocket => write!(f, "Invalid socket ID."),
             Error::RoutingTableInvalid => write!(f, "Invalid or corrupted routing table."),
@@ -108,6 +106,7 @@ impl error::Error for Error {
         match *self {
             Error::Io(ref err) => err.description(),
             Error::ParseError(ref err) => err.description(),
+            Error::EncodeError(_) => "Error while serializing to buffer.",
             Error::ParseIncomplete(_) => "Missing bytes while deserializing.",
             Error::PacketNeedsPlain => {
                 "Function needs a plaintext frame but was passed some other type."
@@ -131,7 +130,6 @@ impl error::Error for Error {
             Error::ConvertPublicKey => "Error transforming public signing key to crypto key.",
             Error::ConvertPrivateKey => "Error transforming private signing key to crypto key.",
             Error::OverlayInvalidIP => "Invalid Overlay IP address.",
-            Error::OverlayFrameFull(_) => "Current Overlay frame is too full for this packet.",
             Error::InvalidInterface => "Invalid interface ID.",
             Error::InvalidSocket => "Invalid socket ID.",
             Error::RoutingTableInvalid => "Invalid or corrupted routing table.",
@@ -146,6 +144,7 @@ impl error::Error for Error {
         match *self {
             Error::Io(ref err) => Some(err),
             Error::ParseError(_) => None,
+            Error::EncodeError(_) => None,
             Error::ParseIncomplete(_) => None,
             Error::PacketNeedsPlain => None,
             Error::PacketNeedsEncrypted => None,
@@ -161,7 +160,6 @@ impl error::Error for Error {
             Error::ConvertPublicKey => None,
             Error::ConvertPrivateKey => None,
             Error::OverlayInvalidIP => None,
-            Error::OverlayFrameFull(_) => None,
             Error::InvalidInterface => None,
             Error::InvalidSocket => None,
             Error::RoutingTableInvalid => None,
@@ -188,8 +186,17 @@ impl<'a> From<nom::Err<&'a [u8]>> for Error {
     }
 }
 
+impl From<GenError> for Error {
+    fn from(err: GenError) -> Error {
+        Error::EncodeError(err)
+    }
+}
+
 impl From<Error> for () {
     fn from(_: Error) -> () {}
 }
 
 pub type Result<T> = result::Result<T, Error>;
+
+// Alias to provide an analogue to IResult, except for the encoding pipeline.
+pub type GResult<T> = result::Result<T, GenError>;

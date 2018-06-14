@@ -1,12 +1,11 @@
-use bytes::{BigEndian, BufMut};
+use std::{ops::Shr, u16, vec::Vec};
+use bytes::BufMut;
+use cookie_factory::GenError;
 use nom::{be_u32, be_u8};
-use std::vec::Vec;
-use std::u16;
-use std::ops::Shr;
-use error::{Error, Result};
+
 use addr::{Addr, LocalAddr, Nonce, Signature, NONCEBYTES, SIGNATUREBYTES};
+use error::{Error, Result, GResult};
 use util::BitMask;
-use nom;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Payload {
@@ -30,12 +29,6 @@ pub enum Payload {
 }
 
 impl Payload {
-    //pub(crate) fn decode_plain(buf: &[u8], len: u16) -> nom::IResult<&[u8], (u32, u32, Vec<u8>)> {
-    //    let (r, (dst_port, src_port)) = try_parse!(buf, ports_parse);
-    //    let data_len = if src_port != dst_port { len - 4 } else { len };
-    //    let (r, data) = try_parse!(r, take!(data_len));
-    //    Ok((r, (src_port, dst_port, data.to_vec())))
-    //}
     named_args!(pub decode_plain(len: u16)<(u32, u32, Vec<u8>)>,
         do_parse!(
             ports: ports_parse >>
@@ -44,18 +37,6 @@ impl Payload {
             (ports.1, ports.0, data.to_vec())
         )
     );
-
-    //pub(crate) fn decode_signed(
-    //    buf: &[u8],
-    //    len: u16,
-    //) -> nom::IResult<&[u8], (u8, u32, u32, Signature, Vec<u8>)> {
-    //    let (r, algo) = try_parse!(buf, be_u8);
-    //    let (r, (dst_port, src_port)) = try_parse!(r, ports_parse);
-    //    let data_len = if src_port != dst_port { len - 4 } else { len };
-    //    let (r, sig) = try_parse!(r, count_fixed!(u8, be_u8, SIGNATUREBYTES));
-    //    let (r, data) = try_parse!(r, take!(data_len));
-    //    Ok((r, (algo, src_port, dst_port, Signature(sig), data.to_vec())))
-    //}
 
     named_args!(pub decode_signed(len: u16)<(u8, u32, u32, Signature, Vec<u8>)>,
         do_parse!(
@@ -68,7 +49,6 @@ impl Payload {
         )
     );
 
-
     named_args!(pub decode_encrypted(len: u16)<(u8, Nonce, Vec<u8>)>,
         do_parse!(
             algo: be_u8 >>
@@ -78,25 +58,24 @@ impl Payload {
         )
     );
 
-    pub fn encode<A: BufMut>(&self, buf: &mut A) -> Result<usize> {
+    pub fn encode<'b>(&self, buf: (&'b mut [u8], usize)) -> GResult<(&'b mut [u8], usize)> {
         match *self {
             Payload::Plain {
                 src_port,
                 dst_port,
                 ref data,
             } => {
-                let w = buf.remaining_mut();
                 let mut port = dst_port << 1;
                 if src_port == dst_port {
                     port |= 1u32;
                 }
-                buf.put_u32::<BigEndian>(port);
-                if src_port != dst_port {
-                    buf.put_u32::<BigEndian>(src_port);
-                }
-                buf.put_slice(data);
-                Ok(w - buf.remaining_mut())
-            }
+                do_gen!(
+                    buf,
+                    gen_be_u32!(port) >>
+                    gen_cond!(src_port != dst_port, gen_be_u32!(src_port)) >>
+                    gen_slice!(data)
+                )
+            },
             Payload::Signed {
                 algo,
                 src_port,
@@ -104,30 +83,30 @@ impl Payload {
                 ref sig,
                 ref data,
             } => {
-                let w = buf.remaining_mut();
-                buf.put_u8(algo);
                 let mut port = dst_port << 1;
                 if src_port == dst_port {
                     port |= 1u32;
                 }
-                buf.put_u32::<BigEndian>(port);
-                if src_port != dst_port {
-                    buf.put_u32::<BigEndian>(src_port);
-                }
-                buf.put_slice(sig.as_ref());
-                buf.put_slice(data);
-                Ok(w - buf.remaining_mut())
+                do_gen!(
+                    buf,
+                    gen_be_u8!(algo) >>
+                    gen_be_u32!(port) >>
+                    gen_cond!(src_port != dst_port, gen_be_u32!(src_port)) >>
+                    gen_slice!(sig.as_ref()) >>
+                    gen_slice!(data)
+                )
             }
             Payload::Encrypted {
                 algo,
                 ref nonce,
                 ref data,
             } => {
-                let w = buf.remaining_mut();
-                buf.put_u8(algo);
-                buf.put_slice(nonce.as_ref());
-                buf.put_slice(data);
-                Ok(w - buf.remaining_mut())
+                do_gen!(
+                    buf,
+                    gen_be_u8!(algo) >>
+                    gen_slice!(nonce.as_ref()) >>
+                    gen_slice!(data)
+                )
             }
         }
     }
@@ -145,9 +124,9 @@ impl Payload {
                 if src_port == dst_port {
                     port |= 1u32;
                 }
-                buf.put_u32::<BigEndian>(port);
+                buf.put_u32_be(port);
                 if src_port != dst_port {
-                    buf.put_u32::<BigEndian>(src_port);
+                    buf.put_u32_be(src_port);
                 }
                 buf.put_slice(data);
                 let (nonce, ciphertext) = if let Ok((nonce, ciphertext)) = from.encrypt(&buf, to) {
@@ -253,28 +232,14 @@ impl Payload {
     }
 }
 
-pub(crate) fn ports_parse(i: &[u8]) -> nom::IResult<&[u8], (u32, u32)> {
-    let (r, mut dst_port) = try_parse!(i, be_u32);
-    let (r, dst_port, src_port) = if dst_port.nth_bit_is_set(1) {
-        dst_port >>= 1;
-        (r, dst_port, dst_port)
-    } else {
-        dst_port >>= 1;
-        let (r, src_port) = try_parse!(r, be_u32);
-        (r, dst_port, src_port)
-    };
-    Ok((r, (dst_port, src_port)))
-}
-
-//named!(ports_parse<(u32, u32)>,
-//    do_parse!(
-//        bits: be_u32 >>
-//        dst_port: value!(bits.shr(1)) >>
-//        src_port: alt_complete!(cond_reduce!(bits.nth_bit_is_set(1), value!(dst_port)) | be_u32) >>
-//        (dst_port, src_port)
-//    )
-//);
-        
+named!(ports_parse<(u32, u32)>,
+    do_parse!(
+        bits: be_u32 >>
+        dst_port: value!(bits.shr(1)) >>
+        src_port: alt_complete!(cond_reduce!(bits.nth_bit_is_set(1), value!(dst_port)) | be_u32) >>
+        (dst_port, src_port)
+    )
+);
 
 #[cfg(test)]
 mod tests {
@@ -317,10 +282,10 @@ mod tests {
             data: vec![0, 1, 2, 3, 4, 5],
         };
         let p2 = p1.clone();
-        let mut buf = vec![];
-        p1.encode(&mut buf).unwrap();
+        let mut buf = vec![0; 250];
+        let (buf, wr) = p1.encode((&mut buf, 0)).unwrap();
         if let Ok((_, (src_port, dst_port, data))) =
-            Payload::decode_plain(buf.as_slice(), (buf.len() - 4) as u16)
+            Payload::decode_plain(buf, (wr - 4) as u16)
         {
             let p1d = Payload::Plain {
                 src_port: src_port,
@@ -344,10 +309,10 @@ mod tests {
         let s1 = LocalAddr::new();
         let mut s2 = LocalAddr::new();
         let p1 = p1.encrypt(&s1, &mut s2).unwrap();
-        let mut buf = vec![];
-        p1.encode(&mut buf).unwrap();
+        let mut buf = vec![0; 250];
+        let (buf, wr) = p1.encode((&mut buf, 0)).unwrap();
         if let Ok((_, (algo, nonce, data))) =
-            Payload::decode_encrypted(buf.as_slice(), (buf.len() - 1 - NONCEBYTES) as u16)
+            Payload::decode_encrypted(buf, (wr - 1 - NONCEBYTES) as u16)
         {
             let p1d = Payload::Encrypted {
                 algo: algo,
@@ -370,10 +335,10 @@ mod tests {
         };
         let s1 = LocalAddr::new();
         let p1 = p1.sign(&s1).unwrap();
-        let mut buf = vec![];
-        p1.encode(&mut buf).unwrap();
+        let mut buf = vec![0; 250];
+        let (buf, wr) = p1.encode((&mut buf, 0)).unwrap();
         if let Ok((_, (algo, src_port, dst_port, sig, data))) =
-            Payload::decode_signed(buf.as_slice(), (buf.len() - 5 - SIGNATUREBYTES) as u16)
+            Payload::decode_signed(buf, (wr - 5 - SIGNATUREBYTES) as u16)
         {
             let p1d = Payload::Signed {
                 algo: algo,

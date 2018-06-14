@@ -5,8 +5,8 @@
 use std::io;
 use std::mem;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::vec::Vec;
 
+use bytes::BytesMut;
 use futures::prelude::*;
 use futures::Sink;
 use futures::Stream;
@@ -30,8 +30,8 @@ pub struct V4Interface {
     toggle: bool,
     seq: i8,
     last_sent_seq: i8,
-    rd: Vec<u8>,
-    wr: Vec<u8>,
+    rd: BytesMut,
+    wr: BytesMut,
 }
 
 impl V4Interface {
@@ -49,8 +49,8 @@ impl V4Interface {
                         toggle: false,
                         seq: 0,
                         last_sent_seq: 0,
-                        rd: vec![0; MTU],
-                        wr: Vec::with_capacity(MTU),
+                        rd: BytesMut::with_capacity(MTU),
+                        wr: BytesMut::with_capacity(MTU),
                     })
                 }
                 Err(e) => Err(Error::Io(e)),
@@ -87,8 +87,8 @@ pub struct V6Interface {
     next_frame: Option<Frame>,
     seq: i8,
     last_sent_seq: i8,
-    rd: Vec<u8>,
-    wr: Vec<u8>,
+    rd: BytesMut,
+    wr: BytesMut,
 }
 
 impl V6Interface {
@@ -99,8 +99,8 @@ impl V6Interface {
                 next_frame: None,
                 seq: 0,
                 last_sent_seq: 0,
-                rd: vec![0; MTU],
-                wr: Vec::with_capacity(MTU),
+                rd: BytesMut::with_capacity(MTU),
+                wr: BytesMut::with_capacity(MTU),
             }),
             Err(e) => Err(Error::Io(e)),
         }
@@ -192,7 +192,7 @@ impl Interface {
                 } else if frame.contents().len(frame.header().src()) + len <= MTU {
                     frame
                         .contents()
-                        .encode_multiple(frame.header().src(), &mut iface.wr)?;
+                        .encode(frame.header().src(), &mut iface.wr)?;
                     Ok(None)
                 } else {
                     Ok(Some(frame))
@@ -227,7 +227,7 @@ impl Interface {
                 } else if frame.contents().len(frame.header().src()) + len <= MTU {
                     frame
                         .contents()
-                        .encode_multiple(frame.header().src(), &mut iface.wr)?;
+                        .encode(frame.header().src(), &mut iface.wr)?;
                     Ok(None)
                 } else {
                     Ok(Some(frame))

@@ -15,6 +15,8 @@
 extern crate bitflags;
 extern crate bytes;
 #[macro_use]
+extern crate cookie_factory;
+#[macro_use]
 extern crate futures;
 extern crate futures_timer;
 extern crate hex_slice;
