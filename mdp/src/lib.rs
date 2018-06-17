@@ -18,7 +18,6 @@ extern crate bytes;
 extern crate cookie_factory;
 #[macro_use]
 extern crate futures;
-extern crate futures_timer;
 extern crate hex_slice;
 extern crate libc;
 #[macro_use]
@@ -29,7 +28,9 @@ extern crate petgraph;
 extern crate sodiumoxide;
 extern crate stable_vec;
 extern crate time;
-extern crate tokio;
+extern crate tokio_codec;
+extern crate tokio_timer;
+extern crate tokio_udp;
 
 #[macro_use]
 mod util;

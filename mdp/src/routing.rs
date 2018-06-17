@@ -1,21 +1,24 @@
-use petgraph::graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex};
-use petgraph::Direction;
-use petgraph::visit::{EdgeRef, IntoNodeReferences, VisitMap, Visitable};
-use std::collections::HashMap;
-use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::collections::HashSet;
-use std::cell::Cell;
-use error::{Error, Result};
-use addr::{address_parse, Addr, ADDR_BROADCAST, ADDR_EMPTY};
-use util::BitMask;
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-use std::time::{Duration, Instant};
-use std::u32;
-use std::u64;
-use std::vec::IntoIter;
+use std::{
+    cell::Cell,
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap, HashSet,
+        hash_map::Entry::{Occupied, Vacant}
+    },
+    time::{Duration, Instant},
+    u32,
+    u64,
+    vec::IntoIter
+};
 use bytes::BufMut;
 use nom::{self, IResult, be_i8, be_u32, be_u8};
+use petgraph::{Direction,
+    graph::{DiGraph, EdgeIndex, EdgeReference, NodeIndex},
+    visit::{EdgeRef, IntoNodeReferences, VisitMap, Visitable}
+};
+
+use addr::{address_parse, Addr, ADDR_BROADCAST, ADDR_EMPTY};
+use error::{Error, Result};
+use util::BitMask;
 
 const ACK_WINDOW_FRAME: u32 = 32;
 const ACK_WINDOW_PACKET: u32 = 64;

@@ -10,6 +10,8 @@
 extern crate bitflags;
 extern crate bytes;
 #[macro_use]
+extern crate cookie_factory;
+#[macro_use]
 extern crate futures;
 #[macro_use]
 extern crate log;
@@ -19,22 +21,25 @@ extern crate nom;
 
 mod error;
 
-use std::cmp::Ordering;
-use std::default::Default;
-use std::mem;
-use std::time::{Duration, Instant};
-use std::vec::Vec;
+use std::{
+    cmp::Ordering,
+    default::Default,
+    mem,
+    time::{Duration, Instant},
+    vec::Vec
+};
 
-use bytes::BufMut;
-use futures::prelude::*;
-use futures::{Sink, Stream};
-use nom::{IResult, be_u16, be_u8};
+use bytes::BytesMut;
+use cookie_factory::GenError;
+use futures::{prelude::*, Sink, Stream};
+use nom::{be_u16, be_u8, rest};
 
-use mdp::addr::{ADDR_EMPTY, SocketAddr};
-use mdp::socket::State;
-use mdp::socket::Socket as MdpSocket;
+use mdp::{
+    addr::{ADDR_EMPTY, SocketAddr},
+    socket::{Decoder, Encoder, Framed, Socket as MdpSocket, State}
+};
 
-use error::{Error, Result};
+use error::{Error, GResult, Result};
 
 const WINDOW_SIZE: usize = 4;
 const RESEND_DELAY_MS: u64 = 1500;
@@ -50,44 +55,62 @@ bitflags! {
 }
 
 enum ConnectionState {
-    Waiting(MdpSocket),
+    Waiting(Framed<MspCodec>),
     Error(Error),
     Connected
 }
 
-fn decode_header(buf: &[u8]) -> IResult<&[u8], (MspFlags, u16, u16)> {
-    let (r, flags) = try_parse!(buf, be_u8);
-    let flags = MspFlags::from_bits(flags).unwrap_or_else(|| Default::default());
-    let (r, ack_seq) = if flags.contains(MspFlags::MSP_ACK) {
-        try_parse!(r, be_u16)
-    } else {
-        (r, 0)
-    };
-    let (r, seq) = try_parse!(r, be_u16);
-    IResult::Done(r, (flags, ack_seq, seq))
-}
+struct MspCodec;
 
-fn decode_message(buf: &[u8]) -> Result<(MspFlags, u16, u16, &[u8])> {
-    match decode_header(buf) {
-        IResult::Done(r, (flags, ack_seq, seq)) => Ok((flags, ack_seq, seq, r)),
-        IResult::Incomplete(needed) => Err(Error::ParseIncomplete(needed)),
-        IResult::Error(error) => Err(Error::ParseError(error)),
+impl Default for MspCodec {
+    fn default() -> MspCodec { MspCodec }
+} 
+
+impl Decoder for MspCodec {
+    type Item = (MspFlags, u16, u16, BytesMut);
+    type Error = Error;
+
+    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>> {
+        //try_parse!(buf.as_ref(), decode_message)
+        decode_message(buf).map(|res| Some(res.1)).map_err(|err| Error::ParseError(err.into_error_kind()))
     }
 }
 
-fn encode_message<B: BufMut>(flags: u8, ack_seq: u16, seq: u16, item: &[u8], buf: &mut B) {
-    let f = MspFlags::from_bits(flags).unwrap_or_else(|| Default::default());
-    buf.put_u8(flags);
-    if f.contains(MspFlags::MSP_ACK) {
-        buf.put_u16_be(ack_seq);
+impl Encoder for MspCodec {
+    type Item = (MspFlags, u16, u16, BytesMut);
+    type Error = Error;
+
+    fn encode(&mut self, item: Self::Item, buf: &mut BytesMut) -> Result<()> {
+        encode_message((buf.as_mut(), 0), item.0, item.1, item.2, &item.3).map(|_| ()).map_err(|err| Error::EncodeError(err))
     }
-    buf.put_u16_be(seq);
-    buf.put_slice(item.as_ref());
+}
+
+named!(decode_message<(MspFlags, u16, u16, BytesMut)>,
+    do_parse!(
+        bits: be_u8 >>
+        flags: expr_opt!(MspFlags::from_bits(bits)) >>
+        ack_seq: alt_complete!(cond_reduce!(flags.contains(MspFlags::MSP_ACK), be_u16) | value!(0)) >>
+        seq: be_u16 >>
+        remaining: rest >>
+        (flags, ack_seq, seq, BytesMut::from(remaining))
+    )
+);
+
+fn encode_message<'b>(buf: (&'b mut [u8], usize), flags: MspFlags, ack_seq: u16, seq: u16, contents: &BytesMut) -> GResult<(&'b mut [u8], usize)> {
+    do_gen!(
+        buf,
+        gen_be_u8!(flags.bits()) >>
+        gen_cond!(flags.contains(MspFlags::MSP_ACK), gen_be_u16!(ack_seq)) >>
+        gen_be_u16!(seq) >>
+        gen_slice!(contents)
+    )
 }
 
 struct MspMessage {
+    flags: MspFlags,
+    ack_seq: u16,
     seq: u16,
-    contents: Vec<u8>,
+    contents: BytesMut,
     queued_at: Instant
 }
 
@@ -117,12 +140,12 @@ impl Ord for MspMessage {
 /// into an `MSP` socket via the `From` trait, and then a method is called to either listen on a
 /// particular `MDP` port for an incoming connection or to connect to a remote address.
 pub struct Socket {
-    inner: MdpSocket,
+    inner: Framed<MspCodec>,
 }
 
 impl From<MdpSocket> for Socket {
     fn from(s: MdpSocket) -> Self {
-        Socket { inner: s }
+        Socket { inner: Framed::new(s, MspCodec::default()) }
     }
 }
 
@@ -136,10 +159,7 @@ impl Socket {
         debug!("Connecting to {:?}.", dst);
         let mut flags: MspFlags = Default::default();
         flags.insert(MspFlags::MSP_CONNECT);
-        let mut buf = vec![];
-        buf.put_u8(flags.bits());
-        buf.put_u16_be(1);
-        let sent = self.inner.start_send((buf, dst, State::Encrypted));
+        let sent = self.inner.start_send(((flags, 1, 1, BytesMut::new()), dst, State::Encrypted));
         let state = match sent {
             Ok(AsyncSink::Ready) => ConnectionState::Waiting(self.inner),
             _ => ConnectionState::Error(Error::MspConnectError)
@@ -191,53 +211,53 @@ impl Future for Connection {
         match mem::replace(&mut self.inner, ConnectionState::Connected) {
             ConnectionState::Waiting(mut socket) => {
                 match try_ready!(socket.poll()) {
-                    Some((ref msg, dst, ref state)) => {
-                        if let Ok((flags, ack_seq, seq, remaining)) = decode_message(msg) {
-                            if flags.contains(MspFlags::MSP_ACK) && ack_seq == 1
-                                && state == &State::Encrypted && !self.listening && dst == self.dst
-                            {
-                                let mut stream = Transport {
-                                    inner: socket,
-                                    dst: dst,
-                                    incoming: Vec::with_capacity(WINDOW_SIZE),
-                                    outgoing: Vec::with_capacity(WINDOW_SIZE),
-                                    next_incoming_seq: seq + 1,
-                                    next_outgoing_seq: ack_seq + 1,
-                                };
-                                if !remaining.is_empty() {
-                                    stream.incoming.push(MspMessage {
-                                        seq: seq,
-                                        contents: remaining.to_vec(),
-                                        queued_at: Instant::now()
-                                    });
-                                }
-                                debug!("Successfully connected to {:?}.", dst);
-                                Ok(Async::Ready(stream))
-                            } else if flags.contains(MspFlags::MSP_CONNECT)
-                                && state == &State::Encrypted && self.listening
-                            {
-                                let mut stream = Transport {
-                                    inner: socket,
-                                    dst: dst,
-                                    incoming: Vec::with_capacity(WINDOW_SIZE),
-                                    outgoing: Vec::with_capacity(WINDOW_SIZE),
-                                    next_incoming_seq: seq + 1,
-                                    next_outgoing_seq: ack_seq + 1,
-                                };
-                                if !remaining.is_empty() {
-                                    stream.incoming.push(MspMessage {
-                                        seq: seq,
-                                        contents: remaining.to_vec(),
-                                        queued_at: Instant::now()
-                                    });
-                                }
-                                debug!("Received connection from {:?}.", dst);
-                                Ok(Async::Ready(stream))
-                            } else {
-                                Ok(Async::NotReady)
+                    Some(((flags, ack_seq, seq, remaining), dst, state)) => {
+                        if flags.contains(MspFlags::MSP_ACK) && ack_seq == 1
+                            && state == State::Encrypted && !self.listening && dst == self.dst
+                        {
+                            let mut stream = Transport {
+                                inner: socket,
+                                dst: dst,
+                                incoming: Vec::with_capacity(WINDOW_SIZE),
+                                outgoing: Vec::with_capacity(WINDOW_SIZE),
+                                next_incoming_seq: seq + 1,
+                                next_outgoing_seq: ack_seq + 1,
+                            };
+                            if !remaining.is_empty() {
+                                stream.incoming.push(MspMessage {
+                                    flags: flags,
+                                    ack_seq: ack_seq,
+                                    seq: seq,
+                                    contents: remaining,
+                                    queued_at: Instant::now()
+                                });
                             }
+                            debug!("Successfully connected to {:?}.", dst);
+                            Ok(Async::Ready(stream))
+                        } else if flags.contains(MspFlags::MSP_CONNECT)
+                            && state == State::Encrypted && self.listening
+                        {
+                            let mut stream = Transport {
+                                inner: socket,
+                                dst: dst,
+                                incoming: Vec::with_capacity(WINDOW_SIZE),
+                                outgoing: Vec::with_capacity(WINDOW_SIZE),
+                                next_incoming_seq: seq + 1,
+                                next_outgoing_seq: ack_seq + 1,
+                            };
+                            if !remaining.is_empty() {
+                                stream.incoming.push(MspMessage {
+                                    flags: flags,
+                                    ack_seq: ack_seq,
+                                    seq: seq,
+                                    contents: remaining,
+                                    queued_at: Instant::now()
+                                });
+                            }
+                            debug!("Received connection from {:?}.", dst);
+                            Ok(Async::Ready(stream))
                         } else {
-                            Err(Error::MspConnectError)
+                            Ok(Async::NotReady)
                         }
                     },
                     None => Err(Error::MspConnectError)
@@ -254,7 +274,7 @@ impl Future for Connection {
 /// `Futures::Stream` and `Futures::Sink` traits, so it can be used as a bidirectional asynchronous
 /// transport using the `Futures` library.
 pub struct Transport {
-    inner: MdpSocket,
+    inner: Framed<MspCodec>,
     dst: SocketAddr,
     incoming: Vec<MspMessage>,
     outgoing: Vec<MspMessage>,
@@ -263,7 +283,7 @@ pub struct Transport {
 }
 
 impl Stream for Transport {
-    type Item = Vec<u8>;
+    type Item = BytesMut;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -276,54 +296,57 @@ impl Stream for Transport {
                 }
             }
         }
-        while let Some((msg, dst, state)) = try_ready!(self.inner.poll()) {
+        while let Some(((flags, ack_seq, seq, remaining), dst, state)) = try_ready!(self.inner.poll()) {
             if dst != self.dst || state != State::Encrypted {
                 continue;
             }
-            if let Ok((flags, ack_seq, seq, remaining)) = decode_message(&msg) {
                 if flags.contains(MspFlags::MSP_ACK) {
                     self.outgoing.retain(|m| m.seq != ack_seq);
                 }
                 if seq == self.next_incoming_seq {
                     self.next_incoming_seq += 1;
-                    return Ok(Async::Ready(Some(remaining.to_vec())));
+                    return Ok(Async::Ready(Some(remaining)));
                 } else {
                     self.incoming.push(MspMessage {
+                        flags: flags,
+                        ack_seq: ack_seq,
                         seq: seq,
-                        contents: remaining.to_vec(),
+                        contents: remaining,
                         queued_at: Instant::now()
                     });
                 }
-            }
         }
         Ok(Async::NotReady)
     }
 }
 
 impl Sink for Transport {
-    type SinkItem = (Vec<u8>, SocketAddr, State);
+    type SinkItem = BytesMut;
     type SinkError = Error;
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
         for msg in &self.outgoing {
             if msg.queued_at + Duration::from_millis(RESEND_DELAY_MS) <= Instant::now() {
                 let _ = self.inner
-                    .start_send((msg.contents.clone(), self.dst, State::Encrypted))?;
+                    .start_send(((msg.flags, msg.ack_seq, msg.seq, msg.contents.clone()), self.dst, State::Encrypted))?;
             }
         }
-        let mut buf = vec![];
         let flags = MspFlags::from_bits(0).unwrap_or_else(|| Default::default());
-        encode_message(flags.bits(), 0, self.next_outgoing_seq, item.0.as_ref(), &mut buf);
         self.outgoing.push(MspMessage {
+            flags: flags,
+            ack_seq: 0,
             seq: self.next_outgoing_seq,
-            contents: buf.clone(),
+            contents: item.clone(),
             queued_at: Instant::now(),
         });
         self.next_outgoing_seq += 1;
-        self.inner.start_send((buf, self.dst, State::Encrypted)).map_err(|e| Error::Mdp(e))
+        match self.inner.start_send(((flags, 0, self.next_outgoing_seq - 1, item), self.dst, State::Encrypted))? {
+            AsyncSink::Ready => Ok(AsyncSink::Ready),
+            AsyncSink::NotReady(((_, _, _, contents), _, _)) => Ok(AsyncSink::NotReady(contents))
+        }
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        self.inner.poll_complete().map_err(|e| Error::Mdp(e))
+        self.inner.poll_complete()
     }
 }

@@ -1,23 +1,30 @@
 //! The primary state machine for the MDP protocol and its associated methods. It represents a
 //! single instance of MDP.
-use std::vec::{IntoIter, Vec};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use futures::prelude::*;
-use futures::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use futures_timer::Interval;
-use futures::{Async, AsyncSink};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+    vec::{IntoIter, Vec}
+};
+use bytes::BytesMut;
+use futures::{
+    prelude::*,
+    Async,
+    AsyncSink,
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender}
+};
+use tokio_timer::Interval;
+use stable_vec::StableVec;
+
 use addr::{Addr, LocalAddr, SocketAddr, ADDR_BROADCAST, ADDR_EMPTY};
 use broadcast;
 use error::{Error, Result};
-use packet::Packet;
 use frame::Frame;
 use interface::{BoxInterface, Interface};
+use packet::Packet;
 use qos::{self, QueuedState};
 use routing;
 use socket::Socket;
-use stable_vec::StableVec;
 
 /// The default MDP port for the linkstate routing service.
 pub const PORT_LINKSTATE: u32 = 2;
@@ -250,7 +257,7 @@ impl Protocol {
     pub fn run(&self, tick: Duration) -> Ticker {
         info!("Running MDP.");
         Ticker {
-            interval: Interval::new(tick),
+            interval: Interval::new(Instant::now(), tick),
             proto: self.0.clone(),
         }
     }
@@ -336,7 +343,7 @@ impl ProtocolInfo {
             ref default_addr,
             ..
         } = self;
-        let mut buf = Vec::new();
+        let mut buf = BytesMut::new();
         let now = Instant::now();
         if *routes.local_last_sent() + Duration::from_millis(routing::LINKSTATE_DELAY_MS) <= now {
             debug!("Sending linkstate updates for local addresses.");
@@ -375,7 +382,7 @@ impl ProtocolInfo {
                 qos::Class::Management,
                 -1,
                 false,
-                &buf,
+                &mut buf,
             );
             outgoing.schedule(packet, -1, SEND_DELAY_MS)?;
         }

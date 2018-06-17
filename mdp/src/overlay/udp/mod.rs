@@ -2,20 +2,16 @@
 //!
 //! This contains an implementation of `Interface` and associated primitives that allows for
 //! transiting of MDP traffic over UDP, using the [`Tokio`](https://tokio.rs) implementation of UDP sockets.
-use std::io;
-use std::mem;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{mem, net::{Ipv4Addr, Ipv6Addr, SocketAddr}};
 
 use bytes::BytesMut;
-use futures::prelude::*;
-use futures::Sink;
-use futures::Stream;
-use tokio::net::UdpSocket;
+use futures::{prelude::*, Sink, Stream};
+use tokio_udp::UdpSocket;
 
 use error::{Error, Result};
 use frame::Frame;
-use interface::Interface as InterfaceTrait;
 use interface::BoxInterface;
+use interface::Interface as InterfaceTrait;
 
 const MTU: usize = 1200;
 
@@ -243,20 +239,20 @@ impl Interface {
         }
     }
 
-    fn recv_from(&mut self) -> io::Result<(usize, SocketAddr)> {
+    fn recv_from(&mut self) -> Result<Async<(usize, SocketAddr)>> {
         match *self {
             Interface::V4(ref mut iface) => {
                 trace!("recv_from: attempting to read from socket.");
-                iface.sockets[1].recv_from(&mut iface.rd)
+                iface.sockets[1].poll_recv_from(&mut iface.rd).map_err(|e| Error::Io(e))
             }
             Interface::V6(ref mut iface) => {
                 trace!("recv_from: attempting to read from socket.");
-                iface.socket.recv_from(&mut iface.rd)
+                iface.socket.poll_recv_from(&mut iface.rd).map_err(|e| Error::Io(e))
             }
         }
     }
 
-    fn send_to(&mut self) -> Result<Option<usize>> {
+    fn send_to(&mut self) -> Result<Async<usize>> {
         match *self {
             Interface::V4(ref mut iface) => {
                 let local_addr = iface.sockets[1].local_addr()?;
@@ -266,30 +262,26 @@ impl Interface {
                     let next = iface.next_frame.take().unwrap();
                     next.encode(&mut iface.wr)?;
                 }
-                match iface.sockets[0].send_to(&iface.wr, &bcast) {
-                    Ok(n) => {
+                match iface.sockets[0].poll_send_to(&iface.wr, &bcast) {
+                    Ok(Async::Ready(n)) => {
                         debug!("Sent {} bytes to {}.", n, &bcast);
                         let sent_all = n == iface.wr.len();
                         iface.next_frame.take();
                         iface.wr.clear();
                         if sent_all {
                             iface.next_seq();
-                            Ok(Some(n))
+                            Ok(Async::Ready(n))
                         } else {
                             Err(Error::UdpIncompleteSend(n))
                         }
-                    }
+                    },
+                    Ok(Async::NotReady) => Ok(Async::NotReady),
                     Err(e) => {
-                        if e.kind() == io::ErrorKind::WouldBlock {
-                            debug!("Socket would block.");
-                            Ok(None)
-                        } else {
-                            debug!("Error sending to socket.");
-                            Err(Error::Io(e))
-                        }
+                        debug!("Error sending to socket.");
+                        Err(Error::Io(e))
                     }
                 }
-            }
+            },
             Interface::V6(ref mut iface) => {
                 let local_addr = iface.socket.local_addr()?;
                 let mcast = SocketAddr::new(
@@ -300,25 +292,23 @@ impl Interface {
                     let next = iface.next_frame.take().unwrap();
                     next.encode(&mut iface.wr)?;
                 }
-                match iface.socket.send_to(&iface.wr, &mcast) {
-                    Ok(n) => {
+                match iface.socket.poll_send_to(&iface.wr, &mcast) {
+                    Ok(Async::Ready(n)) => {
                         debug!("Sent {} bytes to {}.", n, &mcast);
                         let sent_all = n == iface.wr.len();
                         iface.next_frame.take();
                         iface.wr.clear();
                         if sent_all {
                             iface.next_seq();
-                            Ok(Some(n))
+                            Ok(Async::Ready(n))
                         } else {
                             Err(Error::UdpIncompleteSend(n))
                         }
-                    }
+                    },
+                    Ok(Async::NotReady) => Ok(Async::NotReady),
                     Err(e) => {
-                        if e.kind() == io::ErrorKind::WouldBlock {
-                            Ok(None)
-                        } else {
-                            Err(Error::Io(e))
-                        }
+                        debug!("Error sending to socket.");
+                        Err(Error::Io(e))
                     }
                 }
             }
@@ -364,18 +354,24 @@ impl Stream for Interface {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        let (n, addr) = try_nb!(self.recv_from());
-        debug!("Read {} bytes from {}.", n, addr);
-        match self.decode_frame(n) {
-            Ok(frame) => {
-                debug!("Decoded frame from {}.", addr);
-                Ok(Async::Ready(Some(frame)))
+        self.recv_from().map(|a| {
+            match a {
+                Async::Ready((n, addr)) => {
+                    debug!("Read {} bytes from {}.", n, addr);
+                    match self.decode_frame(n) {
+                        Ok(frame) => {
+                            debug!("Decoded frame from {}.", addr);
+                            Async::Ready(Some(frame))
+                        }
+                        Err(e) => {
+                            error!("Error decoding frame from {}: {}", addr, e);
+                            Async::NotReady
+                        }
+                    }
+                },
+                Async::NotReady => Async::NotReady
             }
-            Err(e) => {
-                error!("Error decoding frame from {}: {}", addr, e);
-                Ok(Async::NotReady)
-            }
-        }
+        })
     }
 }
 
@@ -388,9 +384,9 @@ impl Sink for Interface {
             Ok(None) => {
                 trace!("start_send: Successfully encoded frame.");
                 return Ok(AsyncSink::Ready);
-            }
+            },
             Ok(Some(frame)) => frame,
-            Err(e) => return Err(e),
+            Err(e) => return Err(e)
         };
         if !self.is_sent() {
             match self.poll_complete()? {
@@ -411,7 +407,7 @@ impl Sink for Interface {
             Ok(Async::Ready(()))
         } else {
             self.send_to().map(|n| {
-                if n.is_some() {
+                if n.is_ready() {
                     trace!("iface poll_complete: sent successfully");
                     Async::Ready(())
                 } else {

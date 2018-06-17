@@ -5,17 +5,19 @@
 //! `cargo run --example mdp-pong
 
 extern crate env_logger;
+extern crate bytes;
 extern crate futures;
 extern crate mdp;
 extern crate net2;
 extern crate time;
 extern crate tokio;
 
+use bytes::BytesMut;
 use mdp::protocol::{Protocol, PORT_LINKSTATE};
 use mdp::overlay::udp::Interface;
 use mdp::addr::{LocalAddr, ADDR_BROADCAST};
 use mdp::services::Routing;
-use tokio::executor::current_thread;
+use mdp::socket::{BytesCodec, Framed};
 use tokio::net::UdpSocket;
 use std::net::SocketAddr as IpSocketAddr;
 use std::time::Duration;
@@ -25,7 +27,6 @@ fn main() {
     drop(env_logger::init());
 
     let b_ip: IpSocketAddr = ("0.0.0.0:4110").parse().unwrap();
-    //let b_udp = UdpSocket::from_socket(UdpBuilder::new_v4().unwrap().reuse_address(true).unwrap().reuse_port(true).unwrap().bind(b_ip).unwrap(), &handle).unwrap();
     let b_udp = UdpSocket::bind(&b_ip).unwrap();
     b_udp.set_broadcast(true).unwrap();
 
@@ -39,6 +40,7 @@ fn main() {
 
     let mut b_socket = b_protocol.bind(&b_addr, 555).unwrap();
     b_socket.set_broadcast(true);
+    let b_socket = Framed::new(b_socket, BytesCodec::new());
     let b_routing = Routing::from(b_protocol.bind(&b_addr, PORT_LINKSTATE).unwrap());
 
     let (b_sink, b_stream) = b_socket.split();
@@ -52,7 +54,7 @@ fn main() {
         println!("[b] recv: {}", String::from_utf8_lossy(&msg));
         println!("[b] send: PONG {}", i);
         (
-            format!("PONG {}", i).into_bytes(),
+            BytesMut::from(format!("PONG {}", i).into_bytes()),
             (ADDR_BROADCAST, 555).into(),
             state,
         )
@@ -60,9 +62,7 @@ fn main() {
     let b = b_sink.send_all(b_stream);
 
     // Spawn the sender of pongs and then wait for our pinger to finish.
-    current_thread::run(|_| {
-        current_thread::spawn(b_routing);
-        current_thread::spawn(b.then(|_| Ok(())));
-        current_thread::spawn(b_protocol.run(Duration::new(1, 0)));
-    });
+    tokio::spawn(b_routing);
+    tokio::spawn(b.then(|_| Ok(())));
+    tokio::run(b_protocol.run(Duration::new(1, 0)));
 }

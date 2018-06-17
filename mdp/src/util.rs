@@ -1,14 +1,3 @@
-// Borrowed from tokio_core
-macro_rules! try_nb {
-    ($e:expr) => (match $e {
-        Ok(t) => t,
-        Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => {
-            return Ok(::futures::Async::NotReady)
-        }
-        Err(e) => return Err(e.into()),
-    })
-}
-
 pub(crate) trait BitMask {
     fn nth_bit_is_set(&self, nth: u32) -> bool;
 }

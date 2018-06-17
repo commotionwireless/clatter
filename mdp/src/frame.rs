@@ -304,6 +304,7 @@ impl Extend<Packet> for Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::BytesMut;
     use addr::*;
     use packet::*;
 
@@ -319,7 +320,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         let mut buf = vec![0; 250];
         println!("p1: {:?}", p1);
@@ -347,7 +348,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         let mut buf = vec![0; 250];
         let p2 = p1.clone();
@@ -373,7 +374,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         let mut p2 = Packet::new(
             (&s1, 1),
@@ -383,7 +384,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet2".as_bytes(),
+            &mut BytesMut::from(&b"Packet2"[..]),
         );
         let mut p3 = Packet::new(
             (&s1, 1),
@@ -393,7 +394,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet3".as_bytes(),
+            &mut BytesMut::from(&b"Packet3"[..]),
         );
         let mut buf = vec![0; 1500];
         let p1c = p1.clone();
@@ -409,7 +410,7 @@ mod tests {
         f1.extend(f2);
         f1.extend(f3);
         println!("f1: {:?}", f1);
-        let f1s = f1.encode(&mut buf).unwrap();
+        let _f1s = f1.encode(&mut buf).unwrap();
         println!("f1 encoded: {:?}", buf);
         let f2 = Frame::decode(&buf).unwrap();
         println!("f1 decoded: {:?}", buf);

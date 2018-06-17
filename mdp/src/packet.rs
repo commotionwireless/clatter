@@ -1,4 +1,5 @@
 use std::u16;
+use bytes::BytesMut;
 use cookie_factory::GenError;
 use nom::{self, IResult, be_i8, be_u16, be_u8};
 use addr::{address_parse, Addr, LocalAddr, SocketAddr, ADDR_BROADCAST, ADDR_EMPTY, NONCEBYTES,
@@ -36,7 +37,7 @@ named!(ttl_qos_parse<(u8, qos::Class)>,
     )
 );
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum State {
     Encrypted,
     Signed,
@@ -66,7 +67,7 @@ impl Packet {
         qos: qos::Class,
         seq: i8,
         ack_soon: bool,
-        contents: &[u8],
+        contents: &mut BytesMut,
     ) -> Packet {
         let s = src.into();
         let d = dst.into();
@@ -93,7 +94,7 @@ impl Packet {
             payload: Payload::Plain {
                 src_port: s.port,
                 dst_port: d.port,
-                data: contents.to_vec(),
+                data: contents.take(),
             },
         }
     }
@@ -198,7 +199,7 @@ impl Packet {
                                 src_port: src_port,
                                 dst_port: dst_port,
                                 sig: sig,
-                                data: data,
+                                data: data.into(),
                             }
                         }
                     )
@@ -398,9 +399,18 @@ impl Packet {
         }
     }
 
-    pub fn contents(&self) -> Result<&[u8]> {
+    pub fn contents(&self) -> Result<&BytesMut> {
         self.payload.contents()
     }
+
+    pub fn contents_mut(&mut self) -> Result<&mut BytesMut> {
+        self.payload.contents_mut()
+    }
+
+    pub fn take(&mut self) -> Result<BytesMut> {
+        self.payload.take()
+    }
+
 }
 
 #[cfg(test)]
@@ -420,7 +430,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         let p2 = p1.clone();
         p1.encrypt(&mut s1).unwrap();
@@ -442,7 +452,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         p1.sign(&mut s1).unwrap();
         assert!(p1.verify().is_ok())
@@ -462,7 +472,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         println!("p1: {:?}", p1);
         let p2 = p1.clone();
@@ -487,7 +497,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         println!("p1: {:?}", p1);
         let p2 = p1.clone();
@@ -513,7 +523,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         println!("p1: {:?}", p1);
         let p2 = p1.clone();
@@ -540,7 +550,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         println!("p1: {:?}", p1);
         p1.sign(&mut s1).unwrap();

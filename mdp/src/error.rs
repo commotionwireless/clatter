@@ -1,11 +1,9 @@
 //! The error types for MDP.
-use std::io;
-use std::result;
-use std::fmt;
-use std::error;
-use nom;
-use addr::SocketAddr;
+use std::{error, fmt, io, result};
 use cookie_factory::GenError;
+use nom;
+
+use addr::SocketAddr;
 
 #[derive(Debug)]
 pub enum Error {

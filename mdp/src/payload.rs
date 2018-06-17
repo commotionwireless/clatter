@@ -1,5 +1,5 @@
 use std::{ops::Shr, u16, vec::Vec};
-use bytes::BufMut;
+use bytes::{BufMut, BytesMut};
 use cookie_factory::GenError;
 use nom::{be_u32, be_u8};
 
@@ -12,49 +12,49 @@ pub enum Payload {
     Plain {
         src_port: u32,
         dst_port: u32,
-        data: Vec<u8>,
+        data: BytesMut,
     },
     Signed {
         algo: u8,
         src_port: u32,
         dst_port: u32,
-        data: Vec<u8>,
+        data: BytesMut,
         sig: Signature,
     },
     Encrypted {
         algo: u8,
         nonce: Nonce,
-        data: Vec<u8>,
+        data: BytesMut,
     },
 }
 
 impl Payload {
-    named_args!(pub decode_plain(len: u16)<(u32, u32, Vec<u8>)>,
+    named_args!(pub decode_plain(len: u16)<(u32, u32, BytesMut)>,
         do_parse!(
             ports: ports_parse >>
             data_len: alt_complete!(cond_reduce!(ports.1 != ports.0, value!(len - 4)) | value!(len)) >>
             data: take!(data_len) >>
-            (ports.1, ports.0, data.to_vec())
+            (ports.1, ports.0, data.into())
         )
     );
 
-    named_args!(pub decode_signed(len: u16)<(u8, u32, u32, Signature, Vec<u8>)>,
+    named_args!(pub decode_signed(len: u16)<(u8, u32, u32, Signature, BytesMut)>,
         do_parse!(
             algo: be_u8 >>
             ports: ports_parse >>
             data_len: alt_complete!(cond_reduce!(ports.1 != ports.0, value!(len - 4)) | value!(len)) >>
             sig: count_fixed!(u8, be_u8, SIGNATUREBYTES) >>
             data: take!(data_len) >>
-            (algo, ports.1, ports.0, Signature(sig), data.to_vec())
+            (algo, ports.1, ports.0, Signature(sig), data.into())
         )
     );
 
-    named_args!(pub decode_encrypted(len: u16)<(u8, Nonce, Vec<u8>)>,
+    named_args!(pub decode_encrypted(len: u16)<(u8, Nonce, BytesMut)>,
         do_parse!(
             algo: be_u8 >>
             nonce: count_fixed!(u8, be_u8, NONCEBYTES) >>
             data: take!(len) >>
-            (algo, Nonce(nonce), data.to_vec())
+            (algo, Nonce(nonce), data.into())
         )
     );
 
@@ -137,7 +137,7 @@ impl Payload {
                 Ok(Payload::Encrypted {
                     algo: 1,
                     nonce: nonce,
-                    data: ciphertext,
+                    data: ciphertext.into(),
                 })
             }
         }
@@ -224,10 +224,27 @@ impl Payload {
         }
     }
 
-    pub fn contents(&self) -> Result<&[u8]> {
+    pub fn contents(&self) -> Result<&BytesMut> {
         match *self {
-            Payload::Signed { .. } | Payload::Encrypted { .. } => Err(Error::PacketNeedsPlain),
-            Payload::Plain { ref data, .. } => Ok(data),
+            Payload::Encrypted { .. } => Err(Error::PacketNeedsPlain),
+            Payload::Signed { ref data, .. }
+            | Payload::Plain { ref data, .. } => Ok(data),
+        }
+    }
+
+    pub fn contents_mut(&mut self) -> Result<&mut BytesMut> {
+        match *self {
+            Payload::Encrypted { .. } => Err(Error::PacketNeedsPlain),
+            Payload::Signed { ref mut data, .. } 
+            | Payload::Plain { ref mut data, .. } => Ok(data),
+        }
+    }
+
+    pub fn take(&mut self) -> Result<BytesMut> {
+        match *self {
+            Payload::Encrypted { .. } => Err(Error::PacketNeedsPlain),
+            Payload::Signed { ref mut data, .. } 
+            | Payload::Plain { ref mut data, .. } => Ok(data.take()),
         }
     }
 }
@@ -251,7 +268,7 @@ mod tests {
         let p1 = Payload::Plain {
             src_port: 80,
             dst_port: 80,
-            data: vec![0, 1, 2, 3, 4, 5],
+            data: BytesMut::from(&b"012345"[..]),
         };
         let p2 = p1.clone();
         let s1 = LocalAddr::new();
@@ -267,7 +284,7 @@ mod tests {
         let p1 = Payload::Plain {
             src_port: 80,
             dst_port: 80,
-            data: vec![0, 1, 2, 3, 4, 5],
+            data: BytesMut::from(&b"012345"[..]),
         };
         let s1 = LocalAddr::new();
         let p1 = p1.sign(&s1).unwrap();
@@ -279,7 +296,7 @@ mod tests {
         let p1 = Payload::Plain {
             src_port: 80,
             dst_port: 80,
-            data: vec![0, 1, 2, 3, 4, 5],
+            data: BytesMut::from(&b"012345"[..]),
         };
         let p2 = p1.clone();
         let mut buf = vec![0; 250];
@@ -303,7 +320,7 @@ mod tests {
         let p1 = Payload::Plain {
             src_port: 80,
             dst_port: 80,
-            data: vec![0, 1, 2, 3, 4, 5],
+            data: BytesMut::from(&b"012345"[..]),
         };
         let p2 = p1.clone();
         let s1 = LocalAddr::new();
@@ -331,7 +348,7 @@ mod tests {
         let p1 = Payload::Plain {
             src_port: 80,
             dst_port: 80,
-            data: vec![0, 1, 2, 3, 4, 5],
+            data: BytesMut::from(&b"012345"[..]),
         };
         let s1 = LocalAddr::new();
         let p1 = p1.sign(&s1).unwrap();

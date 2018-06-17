@@ -1,13 +1,15 @@
-use std::vec::Vec;
-use std::collections::BinaryHeap;
-use std::collections::binary_heap::Iter;
-use std::ops::{Index, IndexMut};
-use std::cmp::Ordering;
-use std::cell::RefCell;
-use std::time::{Duration, Instant};
+use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    collections::{BinaryHeap, binary_heap::Iter},
+    ops::{Index, IndexMut},
+    time::{Duration, Instant},
+    vec::Vec
+};
+
+use addr::Addr;
 use error::{Error, Result};
 use packet::Packet;
-use addr::Addr;
 use util::BitMask;
 
 const MAX_LENGTH: usize = 100;
@@ -310,6 +312,7 @@ impl Iterator for Queue {
 mod tests {
     extern crate env_logger;
     use super::*;
+    use bytes::BytesMut;
     use addr::*;
     use packet::*;
     use std::thread::sleep;
@@ -329,7 +332,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         let p2 = Packet::new(
             (&s1, 1),
@@ -339,7 +342,7 @@ mod tests {
             Class::Management,
             0,
             false,
-            "Packet2".as_bytes(),
+            &mut BytesMut::from(&b"Packet2"[..]),
         );
         let p3 = Packet::new(
             (&s1, 1),
@@ -349,7 +352,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet3".as_bytes(),
+            &mut BytesMut::from(&b"Packet3"[..]),
         );
         let p1c = p1.clone();
         let p2c = p2.clone();
@@ -385,7 +388,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         let p2 = Packet::new(
             (&s1, 1),
@@ -395,7 +398,7 @@ mod tests {
             Class::Management,
             12,
             false,
-            "Packet2".as_bytes(),
+            &mut BytesMut::from(&b"Packet2"[..]),
         );
         let p3 = Packet::new(
             (&s1, 1),
@@ -405,7 +408,7 @@ mod tests {
             QOS_DEFAULT,
             42,
             false,
-            "Packet3".as_bytes(),
+            &mut BytesMut::from(&b"Packet3"[..]),
         );
         let p1c = p1.clone();
         let dst = Addr::from(&s2);
@@ -440,7 +443,7 @@ mod tests {
             Class::Voice,
             0,
             false,
-            "Packet1".as_bytes(),
+            &mut BytesMut::from(&b"Packet1"[..]),
         );
         queue.schedule(p1, 0, 0).unwrap();
         sleep(Duration::from_millis(201));

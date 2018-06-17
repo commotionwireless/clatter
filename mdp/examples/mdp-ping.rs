@@ -5,19 +5,19 @@
 //! `cargo run --example mdp-ping
 
 extern crate env_logger;
+extern crate bytes;
 extern crate futures;
-extern crate futures_timer;
 extern crate mdp;
 extern crate net2;
 extern crate time;
 extern crate tokio;
 
+use bytes::BytesMut;
 use mdp::protocol::{Protocol, PORT_LINKSTATE};
 use mdp::overlay::udp::Interface;
-use mdp::socket::State;
+use mdp::socket::{Framed, BytesCodec, State};
 use mdp::addr::{LocalAddr, ADDR_BROADCAST};
 use mdp::services::Routing;
-use tokio::executor::current_thread;
 use tokio::net::UdpSocket;
 use std::net::SocketAddr as IpSocketAddr;
 use std::time::Duration;
@@ -41,6 +41,7 @@ fn main() {
 
     let mut a_socket = a_protocol.bind(&a_addr, 555).unwrap();
     a_socket.set_broadcast(true);
+    let a_socket = Framed::new(a_socket, BytesCodec::new());
     let a_routing = Routing::from(a_protocol.bind(&a_addr, PORT_LINKSTATE).unwrap());
 
     let (a_sink, a_stream) = a_socket.split();
@@ -50,7 +51,7 @@ fn main() {
     // let pings = stream::iter((0..5).map(Ok));
     let a = a_sink
         .send((
-            b"PING 0".to_vec(),
+            BytesMut::from(&b"PING 0"[..]),
             (ADDR_BROADCAST, 555).into(),
             State::Plain,
         ))
@@ -62,7 +63,7 @@ fn main() {
                 println!("[a] recv: {}", String::from_utf8_lossy(&msg));
                 println!("[a] send: PING {}", i);
                 (
-                    format!("PING {}", i).into_bytes(),
+                    BytesMut::from(format!("PING {}", i).into_bytes()),
                     (ADDR_BROADCAST, 555).into(),
                     state,
                 )
@@ -75,9 +76,7 @@ fn main() {
     //let timer = Timer::default();
     //let a_routing = timer.interval(Duration::from_secs(5)).for_each(|_| a_routing).map_err(|_| ());
 
-    current_thread::run(|_| {
-        current_thread::spawn(a_protocol.run(Duration::new(1, 0)).then(|_| Ok(())));
-        current_thread::spawn(a_routing);
-        current_thread::spawn(a.then(|_| Ok(())));
-    });
+    tokio::spawn(a_protocol.run(Duration::new(1, 0)).then(|_| Ok(())));
+    tokio::spawn(a_routing);
+    tokio::run(a.then(|_| Ok(())));
 }

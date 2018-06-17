@@ -5,8 +5,9 @@ authors = ["Josh King <jking@chambana.net>"]
 
 [dependencies]
 mdp = { path = "../mdp" }
-futures = "0.1"
-nom = "^3.2"
+futures = "0.1.13"
+nom = "^4.0"
+cookie-factory = "0.2.4"
 bytes = "0.4"
 bitflags = "1.0"
 log = "0.4"
