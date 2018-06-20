@@ -458,7 +458,7 @@ impl Table {
     //    self.get_peer(&peer.into()).is_some()
     //}
 
-    pub fn is_duplicate_packet<A: Into<Addr>>(&mut self, src: A, seq: i8) -> bool {
+    pub fn is_duplicate_message<A: Into<Addr>>(&mut self, src: A, seq: i8) -> bool {
         if let Some(peer) = self.get_peer_mut(src) {
             peer.seen();
             if peer.ack_seq < 0 {

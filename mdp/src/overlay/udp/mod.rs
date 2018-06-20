@@ -185,10 +185,10 @@ impl Interface {
                     } else {
                         Ok(Some(frame))
                     }
-                } else if frame.contents().len(frame.header().src()) + len <= MTU {
+                } else if frame.contents().len(frame.header().tx()) + len <= MTU {
                     frame
                         .contents()
-                        .encode(frame.header().src(), &mut iface.wr)?;
+                        .encode(frame.header().tx(), &mut iface.wr)?;
                     Ok(None)
                 } else {
                     Ok(Some(frame))
@@ -220,10 +220,10 @@ impl Interface {
                     } else {
                         Ok(Some(frame))
                     }
-                } else if frame.contents().len(frame.header().src()) + len <= MTU {
+                } else if frame.contents().len(frame.header().tx()) + len <= MTU {
                     frame
                         .contents()
-                        .encode(frame.header().src(), &mut iface.wr)?;
+                        .encode(frame.header().tx(), &mut iface.wr)?;
                     Ok(None)
                 } else {
                     Ok(Some(frame))

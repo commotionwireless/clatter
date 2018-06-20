@@ -4,7 +4,7 @@ use nom::{self, IResult, be_i8, be_u8};
 
 use addr::{address_parse, Addr};
 use error::{Error, Result, GResult};
-use packet::Packet;
+use message::Message;
 
 const MAGIC_VERSION: [u8; 1] = [1];
 const MAGIC_ENCAP_MULTIPLE: u8 = 0;
@@ -20,24 +20,24 @@ bitflags! {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Header {
-    src: Addr,
+    tx: Addr,
     iface: i8,
     seq: i8,
     unicast: bool,
 }
 
 impl Header {
-    fn new(src: &Addr, iface: i8, seq: i8, unicast: bool) -> Header {
+    fn new(tx: &Addr, iface: i8, seq: i8, unicast: bool) -> Header {
         Header {
-            src: *src,
+            tx: *tx,
             iface: iface,
             seq: seq,
             unicast: unicast,
         }
     }
 
-    pub fn src(&self) -> &Addr {
-        &self.src
+    pub fn tx(&self) -> &Addr {
+        &self.tx
     }
 
     pub fn iface(&self) -> i8 {
@@ -65,7 +65,7 @@ impl Header {
     }
 
     pub fn len(&self) -> usize {
-        let mut length: usize = self.src.len() + 3;
+        let mut length: usize = self.tx.len() + 3;
         if self.iface >= 0 {
             length += 1;
         }
@@ -88,7 +88,7 @@ impl Header {
         };
         do_gen!(
             buf,
-            gen_slice!(self.src.as_ref()) >>
+            gen_slice!(self.tx.as_ref()) >>
             gen_be_u8!(flags.bits) >>
             gen_cond!(self.iface >= 0, gen_be_i8!(self.iface)) >>
             gen_cond!(self.seq >= 0, gen_be_i8!(self.seq))
@@ -96,7 +96,7 @@ impl Header {
     }
     
     fn decode_header<'a>(buf: &'a [u8]) -> IResult<&'a [u8], Header> {
-        let (r, src): (&[u8], Addr) = try_parse!(buf, address_parse);
+        let (r, tx): (&[u8], Addr) = try_parse!(buf, address_parse);
         let (r, bits) = try_parse!(r, be_u8);
         let flags = match FrameFlags::from_bits(bits) {
             Some(flags) => flags,
@@ -114,7 +114,7 @@ impl Header {
         };
         Ok((
             r,
-            Header::new(&src, iface, seq, flags.contains(FrameFlags::FRAME_UNICAST)),
+            Header::new(&tx, iface, seq, flags.contains(FrameFlags::FRAME_UNICAST)),
         ))
     }
 
@@ -129,27 +129,27 @@ impl Header {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Contents {
-    Single(Packet),
-    Multiple(Vec<Packet>),
+    Single(Message),
+    Multiple(Vec<Message>),
 }
 
 impl Contents {
-    fn encode_contents<'b>(&self, encap_src: &Addr, buf: (&'b mut [u8], usize)) -> GResult<(&'b mut [u8], usize)> {
+    fn encode_contents<'b>(&self, tx: &Addr, buf: (&'b mut [u8], usize)) -> GResult<(&'b mut [u8], usize)> {
         match *self {
-            Contents::Single(ref packet) => packet.encode(encap_src, true, buf),
-            Contents::Multiple(ref packets) => {
-                let encoder = |buf: (&'b mut [u8], usize), p: &Packet| p.encode(encap_src, false, buf);
+            Contents::Single(ref message) => message.encode(tx, true, buf),
+            Contents::Multiple(ref messages) => {
+                let encoder = |buf: (&'b mut [u8], usize), p: &Message| p.encode(tx, false, buf);
                 do_gen!(
                     buf,
-                    gen_many_ref!(packets.iter(), encoder)
+                    gen_many_ref!(messages.iter(), encoder)
                 )
             }
         }
     }
 
-    pub fn encode<B: AsMut<[u8]> + Deref<Target=[u8]>>(&self, encap_src: &Addr, buf: &mut B) -> Result<usize> {
+    pub fn encode<B: AsMut<[u8]> + Deref<Target=[u8]>>(&self, tx: &Addr, buf: &mut B) -> Result<usize> {
         let start = buf.len();
-        match self.encode_contents(encap_src, (buf.as_mut(), start)).map(|b| b.1) {
+        match self.encode_contents(tx, (buf.as_mut(), start)).map(|b| b.1) {
             Ok(end) => {
                 trace!("Encoded frame of size {}.", end - start);
                 Ok(end)
@@ -158,11 +158,11 @@ impl Contents {
         }
     }
 
-    pub(crate) fn len(&self, encap_src: &Addr) -> usize {
+    pub(crate) fn len(&self, tx: &Addr) -> usize {
         match *self {
-            Contents::Single(ref packet) => packet.len(encap_src, true),
-            Contents::Multiple(ref packets) => {
-                packets.iter().map(|p| p.len(encap_src, false)).sum()
+            Contents::Single(ref message) => message.len(tx, true),
+            Contents::Multiple(ref messages) => {
+                messages.iter().map(|p| p.len(tx, false)).sum()
             }
         }
     }
@@ -175,10 +175,10 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn encap<A: Into<Addr> + Copy>(packet: Packet, src: A, iface: i8, seq: i8) -> Frame {
+    pub fn encap<A: Into<Addr> + Copy>(message: Message, tx: A, iface: i8, seq: i8) -> Frame {
         Frame {
-            header: Header::new(&src.into(), iface, seq, false),
-            contents: Contents::Single(packet),
+            header: Header::new(&tx.into(), iface, seq, false),
+            contents: Contents::Single(message),
         }
     }
 
@@ -207,24 +207,24 @@ impl Frame {
         match encap {
             MAGIC_ENCAP_MULTIPLE => {
                 trace!("Decoding frame ENCAP_MULTIPLE.");
-                let (r, packets) =
-                    try_parse!(r, many1!(complete!(apply!(Packet::decode, &header.src, false))));
+                let (r, messages) =
+                    try_parse!(r, many1!(complete!(apply!(Message::decode, &header.tx, false))));
                 Ok((
                     r,
                     Frame {
                         header: header,
-                        contents: Contents::Multiple(packets),
+                        contents: Contents::Multiple(messages),
                     },
                 ))
             }
             MAGIC_ENCAP_SINGLE => {
                 trace!("Decoding frame ENCAP_SINGLE.");
-                let (r, packet) = try_parse!(r, complete!(apply!(Packet::decode, &header.src, true)));
+                let (r, message) = try_parse!(r, complete!(apply!(Message::decode, &header.tx, true)));
                 Ok((
                     r,
                     Frame {
                         header: header,
-                        contents: Contents::Single(packet),
+                        contents: Contents::Single(message),
                     },
                 ))
             }
@@ -252,7 +252,7 @@ impl Frame {
             gen_be_u8!(MAGIC_VERSION[0]) >>
             gen_if_else!(single, gen_be_u8!(MAGIC_ENCAP_SINGLE), gen_be_u8!(MAGIC_ENCAP_MULTIPLE)) >>
             gen_call!(header_encode) >>
-            gen_call!(contents_encode, &self.header.src)
+            gen_call!(contents_encode, &self.header.tx)
         )
     }
 
@@ -267,13 +267,13 @@ impl Frame {
     }
 
     pub fn len(&self) -> usize {
-        self.header.len() + self.contents.len(&self.header.src)
+        self.header.len() + self.contents.len(&self.header.tx)
     }
 }
 
 impl IntoIterator for Frame {
-    type Item = Packet;
-    type IntoIter = IntoIter<Packet>;
+    type Item = Message;
+    type IntoIter = IntoIter<Message>;
 
     fn into_iter(self) -> Self::IntoIter {
         match self.contents {
@@ -283,17 +283,17 @@ impl IntoIterator for Frame {
     }
 }
 
-impl Extend<Packet> for Frame {
-    fn extend<T: IntoIterator<Item = Packet>>(&mut self, iter: T) {
+impl Extend<Message> for Frame {
+    fn extend<T: IntoIterator<Item = Message>>(&mut self, iter: T) {
         match self.contents {
             Contents::Multiple(ref mut v) => {
                 v.extend(iter);
             }
             Contents::Single(_) => {
-                if let Contents::Single(packet) =
+                if let Contents::Single(message) =
                     mem::replace(&mut self.contents, Contents::Multiple(Vec::new()))
                 {
-                    self.extend(once(packet));
+                    self.extend(once(message));
                     self.extend(iter);
                 }
             }
@@ -306,13 +306,13 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use addr::*;
-    use packet::*;
+    use message::*;
 
     #[test]
     fn decode_single_plain() {
         let s1 = LocalAddr::new();
         let s2 = LocalAddr::new();
-        let p1 = Packet::new(
+        let p1 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -320,7 +320,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
         let mut buf = vec![0; 250];
         println!("p1: {:?}", p1);
@@ -340,7 +340,7 @@ mod tests {
     fn decode_single_encrypted() {
         let mut s1 = LocalAddr::new();
         let mut s2 = LocalAddr::new();
-        let mut p1 = Packet::new(
+        let mut p1 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -348,7 +348,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
         let mut buf = vec![0; 250];
         let p2 = p1.clone();
@@ -366,7 +366,7 @@ mod tests {
         let mut s1 = LocalAddr::new();
         let mut s2 = LocalAddr::new();
         let s3 = LocalAddr::new();
-        let p1 = Packet::new(
+        let p1 = Message::new(
             (&s1, 1),
             (&s3, 1),
             &s2,
@@ -374,9 +374,9 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
-        let mut p2 = Packet::new(
+        let mut p2 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -384,9 +384,9 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet2"[..]),
+            &mut BytesMut::from(&b"Message2"[..]),
         );
-        let mut p3 = Packet::new(
+        let mut p3 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -394,7 +394,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet3"[..]),
+            &mut BytesMut::from(&b"Message3"[..]),
         );
         let mut buf = vec![0; 1500];
         let p1c = p1.clone();

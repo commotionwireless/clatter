@@ -9,7 +9,7 @@ use std::{
 
 use addr::Addr;
 use error::{Error, Result};
-use packet::Packet;
+use message::Message;
 use util::BitMask;
 
 const MAX_LENGTH: usize = 100;
@@ -34,23 +34,23 @@ impl QueuedInfo {
     }
 }
 
-struct QueuedPacket {
-    inner: RefCell<Option<Packet>>,
+struct QueuedMessage {
+    inner: RefCell<Option<Message>>,
     info: QueuedInfo,
 }
 
-impl QueuedPacket {
-    fn new(packet: Packet, info: QueuedInfo) -> QueuedPacket {
-        QueuedPacket {
-            inner: RefCell::new(Some(packet)),
+impl QueuedMessage {
+    fn new(message: Message, info: QueuedInfo) -> QueuedMessage {
+        QueuedMessage {
+            inner: RefCell::new(Some(message)),
             info: info,
         }
     }
 
-    fn unsent(packet: Packet, iface: i8, send_in: u64) -> QueuedPacket {
+    fn unsent(message: Message, iface: i8, send_in: u64) -> QueuedMessage {
         let now = Instant::now();
-        QueuedPacket::new(
-            packet,
+        QueuedMessage::new(
+            message,
             QueuedInfo {
                 send_at: now + Duration::from_millis(send_in),
                 enqueued_at: now,
@@ -59,10 +59,10 @@ impl QueuedPacket {
         )
     }
 
-    fn sent(packet: Packet, send_in: Duration, seq: i8, dst: Vec<Addr>) -> QueuedPacket {
+    fn sent(message: Message, send_in: Duration, seq: i8, dst: Vec<Addr>) -> QueuedMessage {
         let now = Instant::now();
-        QueuedPacket::new(
-            packet,
+        QueuedMessage::new(
+            message,
             QueuedInfo {
                 send_at: now + send_in,
                 enqueued_at: now,
@@ -75,22 +75,22 @@ impl QueuedPacket {
     }
 }
 
-impl PartialEq for QueuedPacket {
-    fn eq(&self, other: &QueuedPacket) -> bool {
+impl PartialEq for QueuedMessage {
+    fn eq(&self, other: &QueuedMessage) -> bool {
         self.info.send_at.eq(&other.info.send_at)
     }
 }
 
-impl Eq for QueuedPacket {}
+impl Eq for QueuedMessage {}
 
-impl PartialOrd for QueuedPacket {
-    fn partial_cmp(&self, other: &QueuedPacket) -> Option<Ordering> {
+impl PartialOrd for QueuedMessage {
+    fn partial_cmp(&self, other: &QueuedMessage) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for QueuedPacket {
-    fn cmp(&self, other: &QueuedPacket) -> Ordering {
+impl Ord for QueuedMessage {
+    fn cmp(&self, other: &QueuedMessage) -> Ordering {
         other.info.send_at.cmp(&self.info.send_at)
     }
 }
@@ -119,7 +119,7 @@ impl IndexMut<Class> for Queue {
 }
 
 pub(crate) struct Bucket {
-    packets: BinaryHeap<QueuedPacket>,
+    messages: BinaryHeap<QueuedMessage>,
     max_length: usize,
     max_latency: Duration,
 }
@@ -127,25 +127,25 @@ pub(crate) struct Bucket {
 impl Bucket {
     fn new() -> Bucket {
         Bucket {
-            packets: BinaryHeap::new(),
+            messages: BinaryHeap::new(),
             max_length: MAX_LENGTH,
             max_latency: Duration::from_millis(0),
         }
     }
 
     fn len(&self) -> usize {
-        self.packets.len()
+        self.messages.len()
     }
 
-    fn iter(&self) -> Iter<QueuedPacket> {
-        self.packets.iter()
+    fn iter(&self) -> Iter<QueuedMessage> {
+        self.messages.iter()
     }
 
-    fn try_push(&mut self, p: QueuedPacket) -> Result<()> {
+    fn try_push(&mut self, p: QueuedMessage) -> Result<()> {
         if self.len() >= self.max_length {
             Err(Error::QueueCongestion)
         } else {
-            Ok(self.packets.push(p))
+            Ok(self.messages.push(p))
         }
     }
 }
@@ -167,26 +167,26 @@ impl Queue {
         queue
     }
 
-    pub fn schedule(&mut self, p: Packet, iface: i8, ms: u64) -> Result<()> {
+    pub fn schedule(&mut self, p: Message, iface: i8, ms: u64) -> Result<()> {
         if let Some(b) = self.buckets.get_mut(p.qos as usize) {
-            b.try_push(QueuedPacket::unsent(p, iface, ms))
+            b.try_push(QueuedMessage::unsent(p, iface, ms))
         } else {
             Err(Error::QueueCongestion)
         }
     }
 
-    pub fn reschedule(&mut self, p: Packet, ms: Duration, seq: i8, dst: Vec<Addr>) -> Result<()> {
-        debug!("Rescheduled packet {} for resending in {:?} ms.", seq, ms);
+    pub fn reschedule(&mut self, p: Message, ms: Duration, seq: i8, dst: Vec<Addr>) -> Result<()> {
+        debug!("Rescheduled message {} for resending in {:?} ms.", seq, ms);
         if let Some(b) = self.buckets.get_mut(p.qos as usize) {
-            b.try_push(QueuedPacket::sent(p, ms, seq, dst))
+            b.try_push(QueuedMessage::sent(p, ms, seq, dst))
         } else {
             Err(Error::QueueCongestion)
         }
     }
 
-    pub fn requeue(&mut self, p: Packet, q: QueuedInfo) -> Result<()> {
+    pub fn requeue(&mut self, p: Message, q: QueuedInfo) -> Result<()> {
         if let Some(b) = self.buckets.get_mut(p.qos as usize) {
-            b.try_push(QueuedPacket::new(p, q))
+            b.try_push(QueuedMessage::new(p, q))
         } else {
             Err(Error::QueueCongestion)
         }
@@ -196,7 +196,7 @@ impl Queue {
         self.buckets.iter().fold(0, |len, q| len + q.len())
     }
 
-    fn try_next(&mut self, tries: u8) -> Option<(Packet, QueuedInfo)> {
+    fn try_next(&mut self, tries: u8) -> Option<(Message, QueuedInfo)> {
         let len = self.buckets.len();
         if tries as usize >= len {
             return None;
@@ -206,8 +206,8 @@ impl Queue {
         }
         let max_latency = self.buckets[self.index as usize].max_latency;
         let zero = Duration::new(0, 0);
-        match self.buckets[self.index as usize].packets.pop() {
-            Some(QueuedPacket { inner: c, info: i }) => {
+        match self.buckets[self.index as usize].messages.pop() {
+            Some(QueuedMessage { inner: c, info: i }) => {
                 if let Some(p) = c.into_inner() {
                     let now = Instant::now();
                     if max_latency > zero && i.enqueued_at + max_latency < now {
@@ -301,9 +301,9 @@ impl Queue {
 }
 
 impl Iterator for Queue {
-    type Item = (Packet, QueuedInfo);
+    type Item = (Message, QueuedInfo);
 
-    fn next(&mut self) -> Option<(Packet, QueuedInfo)> {
+    fn next(&mut self) -> Option<(Message, QueuedInfo)> {
         self.try_next(0)
     }
 }
@@ -314,7 +314,7 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use addr::*;
-    use packet::*;
+    use message::*;
     use std::thread::sleep;
 
     #[test]
@@ -324,7 +324,7 @@ mod tests {
         let s1 = LocalAddr::new();
         let s2 = LocalAddr::new();
         let s3 = LocalAddr::new();
-        let p1 = Packet::new(
+        let p1 = Message::new(
             (&s1, 1),
             (&s3, 1),
             &s2,
@@ -332,9 +332,9 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
-        let p2 = Packet::new(
+        let p2 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -342,9 +342,9 @@ mod tests {
             Class::Management,
             0,
             false,
-            &mut BytesMut::from(&b"Packet2"[..]),
+            &mut BytesMut::from(&b"Message2"[..]),
         );
-        let p3 = Packet::new(
+        let p3 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -352,7 +352,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet3"[..]),
+            &mut BytesMut::from(&b"Message3"[..]),
         );
         let p1c = p1.clone();
         let p2c = p2.clone();
@@ -380,7 +380,7 @@ mod tests {
         let s1 = LocalAddr::new();
         let s2 = LocalAddr::new();
         let s3 = LocalAddr::new();
-        let p1 = Packet::new(
+        let p1 = Message::new(
             (&s1, 1),
             (&s3, 1),
             &s2,
@@ -388,9 +388,9 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
-        let p2 = Packet::new(
+        let p2 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -398,9 +398,9 @@ mod tests {
             Class::Management,
             12,
             false,
-            &mut BytesMut::from(&b"Packet2"[..]),
+            &mut BytesMut::from(&b"Message2"[..]),
         );
-        let p3 = Packet::new(
+        let p3 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -408,7 +408,7 @@ mod tests {
             QOS_DEFAULT,
             42,
             false,
-            &mut BytesMut::from(&b"Packet3"[..]),
+            &mut BytesMut::from(&b"Message3"[..]),
         );
         let p1c = p1.clone();
         let dst = Addr::from(&s2);
@@ -435,7 +435,7 @@ mod tests {
         let _ = env_logger::try_init();
         let mut queue = Queue::new();
         let s1 = LocalAddr::new();
-        let p1 = Packet::new(
+        let p1 = Message::new(
             (&s1, 1),
             (&s1, 1),
             &s1,
@@ -443,7 +443,7 @@ mod tests {
             Class::Voice,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
         queue.schedule(p1, 0, 0).unwrap();
         sleep(Duration::from_millis(201));

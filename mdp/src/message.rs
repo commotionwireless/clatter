@@ -13,7 +13,7 @@ pub const TTL_MAX: u8 = 31;
 pub const QOS_DEFAULT: qos::Class = qos::Class::Ordinary;
 
 bitflags! {
-    struct PacketFlags: u8 {
+    struct MessageFlags: u8 {
         const PACKET_SENDER_SAME = 0b0000_0001;
         const PACKET_BROADCAST = 0b0000_0010;
         const PACKET_ONE_HOP = 0b0000_0100;
@@ -45,7 +45,7 @@ pub enum State {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Packet {
+pub struct Message {
     src: Addr,
     dst: Addr,
     bid: broadcast::Id,
@@ -58,7 +58,7 @@ pub struct Packet {
     payload: Payload,
 }
 
-impl Packet {
+impl Message {
     pub fn new<A: Into<SocketAddr>, B: Into<Addr>>(
         src: A,
         dst: A,
@@ -68,7 +68,7 @@ impl Packet {
         seq: i8,
         ack_soon: bool,
         contents: &mut BytesMut,
-    ) -> Packet {
+    ) -> Message {
         let s = src.into();
         let d = dst.into();
         let b = if d.addr == ADDR_BROADCAST {
@@ -81,7 +81,7 @@ impl Packet {
             n if n > TTL_MAX => TTL_MAX,
             _ => ttl,
         };
-        Packet {
+        Message {
             src: s.addr,
             dst: d.addr,
             bid: b,
@@ -99,35 +99,35 @@ impl Packet {
         }
     }
 
-//    named_args!(pub decode(encap_src: Addr, single: bool)<Packet>,
+//    named_args!(pub decode(tx: Addr, single: bool)<Message>,
 //        do_parse!(
 //            bits: be_u8 >>
-//            flags: expr_opt!(PacketFlags::from_bits(bits)) >>
-//            src: alt_complete!(cond_reduce!(!flags.contains(PacketFlags::PACKET_SENDER_SAME), return_error!(call!(address_parse))) | encap_src.into()) >>
-//            dst: alt_complete!(cond_reduce!(!flags.contains(PacketFlags::PACKET_BROADCAST), return_error!(call!(address_parse))) | value!(ADDR_BROADCAST)) >>
-//            rx: alt_complete!(cond_reduce!(!(flags.contains(PacketFlags::PACKET_BROADCAST) || flags.contains(PacketFlags::PACKET_ONE_HOP)), return_error!(call!(address_parse))) | value!(ADDR_EMPTY)) >>
-//            bid: alt_complete!(cond_reduce!(flags.contains(PacketFlags::PACKET_BROADCAST) && !flags.contains(PacketFlags::PACKET_ONE_HOP), return_error!(call!(bid_parse))) | value!(BID_EMPTY)) >>
-//            qos_ttl: alt_complete!(cond_reduce!(!flags.contains(PacketFlags::PACKET_ONE_HOP), return_error!(call!(ttl_qos_parse))) | value!((0, QOS_DEFAULT))) >>
+//            flags: expr_opt!(MessageFlags::from_bits(bits)) >>
+//            src: alt_complete!(cond_reduce!(!flags.contains(MessageFlags::PACKET_SENDER_SAME), return_error!(call!(address_parse))) | tx.into()) >>
+//            dst: alt_complete!(cond_reduce!(!flags.contains(MessageFlags::PACKET_BROADCAST), return_error!(call!(address_parse))) | value!(ADDR_BROADCAST)) >>
+//            rx: alt_complete!(cond_reduce!(!(flags.contains(MessageFlags::PACKET_BROADCAST) || flags.contains(MessageFlags::PACKET_ONE_HOP)), return_error!(call!(address_parse))) | value!(ADDR_EMPTY)) >>
+//            bid: alt_complete!(cond_reduce!(flags.contains(MessageFlags::PACKET_BROADCAST) && !flags.contains(MessageFlags::PACKET_ONE_HOP), return_error!(call!(bid_parse))) | value!(BID_EMPTY)) >>
+//            qos_ttl: alt_complete!(cond_reduce!(!flags.contains(MessageFlags::PACKET_ONE_HOP), return_error!(call!(ttl_qos_parse))) | value!((0, QOS_DEFAULT))) >>
 //            seq: be_i8 >>
-//            ack_soon: flags.contains(PacketFlags::PACKET_ACK_SOON) >>
+//            ack_soon: flags.contains(MessageFlags::PACKET_ACK_SOON) >>
 //            payload: switch!(expr_res!(flags.state()),
 //                        State::Encrypted => do_parse!(
 //                                                len: alt_complete!(cond_reduce!(single, 
 //
 //
 
-    pub fn decode<A: Into<Addr>>(buf: &[u8], frame_src: A, single: bool) -> IResult<&[u8], Packet> {
+    pub fn decode<A: Into<Addr>>(buf: &[u8], tx: A, single: bool) -> IResult<&[u8], Message> {
         let (r, bits) = try_parse!(buf, be_u8);
-        if let Some(x) = PacketFlags::from_bits(bits) {
+        if let Some(x) = MessageFlags::from_bits(bits) {
             let flags = x;
-            let (r, src) = if !flags.contains(PacketFlags::PACKET_SENDER_SAME) {
+            let (r, src) = if !flags.contains(MessageFlags::PACKET_SENDER_SAME) {
                 try_parse!(r, address_parse)
             } else {
-                (r, frame_src.into())
+                (r, tx.into())
             };
-            let (r, dst, bid, rx, ttl, qos) = if !flags.contains(PacketFlags::PACKET_BROADCAST) {
+            let (r, dst, bid, rx, ttl, qos) = if !flags.contains(MessageFlags::PACKET_BROADCAST) {
                 let (r, dst) = try_parse!(r, address_parse);
-                let (r, rx, ttl, qos) = if !flags.contains(PacketFlags::PACKET_ONE_HOP) {
+                let (r, rx, ttl, qos) = if !flags.contains(MessageFlags::PACKET_ONE_HOP) {
                     let (r, rx) = try_parse!(r, address_parse);
                     let (r, (ttl, qos)) = try_parse!(r, ttl_qos_parse);
                     (r, rx, ttl, qos)
@@ -136,7 +136,7 @@ impl Packet {
                 };
                 (r, dst, BID_EMPTY, rx, ttl, qos)
             } else {
-                let (r, bid, ttl, qos) = if !flags.contains(PacketFlags::PACKET_ONE_HOP) {
+                let (r, bid, ttl, qos) = if !flags.contains(MessageFlags::PACKET_ONE_HOP) {
                     let (r, bid) = try_parse!(r, bid_parse);
                     let (r, (ttl, qos)) = try_parse!(r, ttl_qos_parse);
                     (r, bid, ttl, qos)
@@ -146,7 +146,7 @@ impl Packet {
                 (r, ADDR_BROADCAST, bid, ADDR_EMPTY, ttl, qos)
             };
             let (r, seq) = try_parse!(r, be_i8);
-            if flags.contains(PacketFlags::PACKET_ENCRYPTED) {
+            if flags.contains(MessageFlags::PACKET_ENCRYPTED) {
                 let (r, len) = if single {
                     let len = r.len() - 1 - NONCEBYTES;
                     (r, len as u16)
@@ -156,7 +156,7 @@ impl Packet {
                 Payload::decode_encrypted(r, len).map(|(r, (algo, nonce, data))|
                     (
                         r,
-                        Packet {
+                        Message {
                             src: src,
                             dst: dst,
                             bid: bid,
@@ -164,7 +164,7 @@ impl Packet {
                             ttl: ttl,
                             qos: qos,
                             seq: seq,
-                            ack_soon: flags.contains(PacketFlags::PACKET_ACK_SOON),
+                            ack_soon: flags.contains(MessageFlags::PACKET_ACK_SOON),
                             local: false,
                             payload: Payload::Encrypted {
                                 algo: algo,
@@ -174,7 +174,7 @@ impl Packet {
                         }
                     )
                 )
-            } else if flags.contains(PacketFlags::PACKET_SIGNED) {
+            } else if flags.contains(MessageFlags::PACKET_SIGNED) {
                 let (r, len) = if single {
                     let len = r.len() - 5 - SIGNATUREBYTES;
                     (r, len as u16)
@@ -184,7 +184,7 @@ impl Packet {
                 Payload::decode_signed(r, len).map(|(r, (algo, src_port, dst_port, sig, data))| 
                     (
                         r,
-                        Packet {
+                        Message {
                             src: src,
                             dst: dst,
                             bid: bid,
@@ -192,7 +192,7 @@ impl Packet {
                             ttl: ttl,
                             qos: qos,
                             seq: seq,
-                            ack_soon: flags.contains(PacketFlags::PACKET_ACK_SOON),
+                            ack_soon: flags.contains(MessageFlags::PACKET_ACK_SOON),
                             local: false,
                             payload: Payload::Signed {
                                 algo: algo,
@@ -214,7 +214,7 @@ impl Packet {
                 Payload::decode_plain(r, len).map(|(r, (src_port, dst_port, data))| 
                     (
                         r,
-                        Packet {
+                        Message {
                             src: src,
                             dst: dst,
                             bid: bid,
@@ -222,7 +222,7 @@ impl Packet {
                             ttl: ttl,
                             qos: qos,
                             seq: seq,
-                            ack_soon: flags.contains(PacketFlags::PACKET_ACK_SOON),
+                            ack_soon: flags.contains(MessageFlags::PACKET_ACK_SOON),
                             local: false,
                             payload: Payload::Plain {
                                 src_port: src_port,
@@ -238,22 +238,22 @@ impl Packet {
         }
     }
 
-    pub fn encode<'b>(&self, encap_src: &Addr, single: bool, buf: (&'b mut [u8], usize)) -> GResult<(&'b mut [u8], usize)> {
-        let mut flags = PacketFlags { bits: 0 };
-        if self.src == encap_src.into() {
-            flags.insert(PacketFlags::PACKET_SENDER_SAME)
+    pub fn encode<'b>(&self, tx: &Addr, single: bool, buf: (&'b mut [u8], usize)) -> GResult<(&'b mut [u8], usize)> {
+        let mut flags = MessageFlags { bits: 0 };
+        if self.src == tx.into() {
+            flags.insert(MessageFlags::PACKET_SENDER_SAME)
         };
         if self.dst == ADDR_BROADCAST {
-            flags.insert(PacketFlags::PACKET_BROADCAST)
+            flags.insert(MessageFlags::PACKET_BROADCAST)
         };
         match self.payload {
-            Payload::Encrypted { .. } => flags.insert(PacketFlags::PACKET_ENCRYPTED),
-            Payload::Signed { .. } => flags.insert(PacketFlags::PACKET_SIGNED),
+            Payload::Encrypted { .. } => flags.insert(MessageFlags::PACKET_ENCRYPTED),
+            Payload::Signed { .. } => flags.insert(MessageFlags::PACKET_SIGNED),
             Payload::Plain { .. } => (),
         };
         match self.ttl {
             0 => return Err(GenError::CustomError(0)),
-            1 => flags.insert(PacketFlags::PACKET_ONE_HOP),
+            1 => flags.insert(MessageFlags::PACKET_ONE_HOP),
             2...TTL_MAX => (),
             _ => return Err(GenError::CustomError(0)),
         };
@@ -261,10 +261,10 @@ impl Packet {
         do_gen!(
             buf,
             gen_be_u8!(flags.bits) >>
-            gen_cond!(!flags.contains(PacketFlags::PACKET_SENDER_SAME), gen_slice!(self.src.as_ref())) >>
-            gen_if_else!(!flags.contains(PacketFlags::PACKET_BROADCAST), gen_slice!(self.dst.as_ref()), gen_cond!(!flags.contains(PacketFlags::PACKET_ONE_HOP), gen_slice!(self.bid.as_ref()))) >>
-            gen_cond!(!(flags.contains(PacketFlags::PACKET_BROADCAST) || flags.contains(PacketFlags::PACKET_ONE_HOP)), gen_slice!(self.rx.as_ref())) >>
-            gen_cond!(!flags.contains(PacketFlags::PACKET_ONE_HOP), gen_be_u8!(self.ttl << 3 | (self.qos as u8 & 0b0000_0111))) >>
+            gen_cond!(!flags.contains(MessageFlags::PACKET_SENDER_SAME), gen_slice!(self.src.as_ref())) >>
+            gen_if_else!(!flags.contains(MessageFlags::PACKET_BROADCAST), gen_slice!(self.dst.as_ref()), gen_cond!(!flags.contains(MessageFlags::PACKET_ONE_HOP), gen_slice!(self.bid.as_ref()))) >>
+            gen_cond!(!(flags.contains(MessageFlags::PACKET_BROADCAST) || flags.contains(MessageFlags::PACKET_ONE_HOP)), gen_slice!(self.rx.as_ref())) >>
+            gen_cond!(!flags.contains(MessageFlags::PACKET_ONE_HOP), gen_be_u8!(self.ttl << 3 | (self.qos as u8 & 0b0000_0111))) >>
             gen_be_i8!(self.seq) >>
             gen_cond!(!single, gen_be_u16!(self.payload.data_len() as u16)) >>
             gen_call!(encoder, &self.payload)
@@ -290,14 +290,14 @@ impl Packet {
         self.payload.verify(self.src)
     }
 
-    pub fn equiv(&self, other: &Packet) -> bool {
+    pub fn equiv(&self, other: &Message) -> bool {
         self.src == other.src && self.dst == other.dst && self.bid == other.bid
             && self.rx == other.rx && self.qos == other.qos && self.payload == other.payload
     }
 
-    pub fn len<A: Into<Addr>>(&self, encap_src: A, single: bool) -> usize {
+    pub fn len<A: Into<Addr>>(&self, tx: A, single: bool) -> usize {
         let mut size: usize = 1 + self.payload.len(); //There's always a payload and flags.
-        if self.src != encap_src.into() {
+        if self.src != tx.into() {
             size += self.src.len(); //Source address.
         }
 
@@ -319,7 +319,7 @@ impl Packet {
         }
 
         if !single {
-            size += 2; //Specify length, unless it's the only packet in the frame.
+            size += 2; //Specify length, unless it's the only message in the frame.
         }
 
         size
@@ -422,7 +422,7 @@ mod tests {
     fn encrypt_decrypt() {
         let mut s1 = LocalAddr::new();
         let mut s2 = LocalAddr::new();
-        let mut p1 = Packet::new(
+        let mut p1 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -430,7 +430,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
         let p2 = p1.clone();
         p1.encrypt(&mut s1).unwrap();
@@ -444,7 +444,7 @@ mod tests {
     fn sign_verify() {
         let mut s1 = LocalAddr::new();
         let s2 = LocalAddr::new();
-        let mut p1 = Packet::new(
+        let mut p1 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -452,7 +452,7 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
         p1.sign(&mut s1).unwrap();
         assert!(p1.verify().is_ok())
@@ -464,7 +464,7 @@ mod tests {
         let s2 = LocalAddr::new();
         let a1: Addr = s1.clone().into();
         let mut buf = vec![0; 250];
-        let p1 = Packet::new(
+        let p1 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -472,14 +472,14 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
         println!("p1: {:?}", p1);
         let p2 = p1.clone();
         let (buf, wr) = p1.encode(&a1, false, (&mut buf, 0)).unwrap();
         println!("p1 encoded: {:?}", buf);
         println!("p1 size: {:?}", wr);
-        let (_, p1d) = Packet::decode(&buf[..wr], &a1, false).unwrap();
+        let (_, p1d) = Message::decode(&buf[..wr], &a1, false).unwrap();
         println!("p1 decoded: {:?}", p1d);
         assert!(p1d.equiv(&p2))
     }
@@ -489,7 +489,7 @@ mod tests {
         let s1 = LocalAddr::new();
         let a1 = Addr::from(&s1);
         let mut buf = vec![0; 250];
-        let p1 = Packet::new(
+        let p1 = Message::new(
             (&a1, 1),
             (&ADDR_BROADCAST, 1),
             ADDR_EMPTY,
@@ -497,14 +497,14 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
         println!("p1: {:?}", p1);
         let p2 = p1.clone();
         let (buf, wr) = p1.encode(&a1, false, (&mut buf, 0)).unwrap();
         println!("p1 encoded: {:?}", buf);
         println!("p1 size: {:?}", wr);
-        let (_, p1d) = Packet::decode(&buf[..wr], &a1, false).unwrap();
+        let (_, p1d) = Message::decode(&buf[..wr], &a1, false).unwrap();
         println!("p1 decoded: {:?}", p1d);
         assert!(p1d.equiv(&p2))
     }
@@ -515,7 +515,7 @@ mod tests {
         let mut s2 = LocalAddr::new();
         let a1: Addr = s1.clone().into();
         let mut buf = vec![0; 250];
-        let mut p1 = Packet::new(
+        let mut p1 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -523,14 +523,14 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
         println!("p1: {:?}", p1);
         let p2 = p1.clone();
         p1.encrypt(&mut s1).unwrap();
         let (buf, wr) = p1.encode(&a1, true, (&mut buf, 0)).unwrap();
         println!("p1 encoded: {:?}", buf);
-        let (_, mut p1d) = Packet::decode(&buf[..wr], &a1, true).unwrap();
+        let (_, mut p1d) = Message::decode(&buf[..wr], &a1, true).unwrap();
         p1d.decrypt(&mut s2).unwrap();
         println!("p1 decoded: {:?}", p1);
         assert!(p1d.equiv(&p2))
@@ -542,7 +542,7 @@ mod tests {
         let s2 = LocalAddr::new();
         let a1: Addr = s1.clone().into();
         let mut buf = vec![0; 250];
-        let mut p1 = Packet::new(
+        let mut p1 = Message::new(
             (&s1, 1),
             (&s2, 1),
             &s2,
@@ -550,13 +550,13 @@ mod tests {
             QOS_DEFAULT,
             0,
             false,
-            &mut BytesMut::from(&b"Packet1"[..]),
+            &mut BytesMut::from(&b"Message1"[..]),
         );
         println!("p1: {:?}", p1);
         p1.sign(&mut s1).unwrap();
         let (buf, wr) = p1.encode(&a1, true, (&mut buf, 0)).unwrap();
         println!("p1 encoded: {:?}", buf);
-        let (_, p1d) = Packet::decode(&buf[..wr], &a1, true).unwrap();
+        let (_, p1d) = Message::decode(&buf[..wr], &a1, true).unwrap();
         assert!(p1d.verify().is_ok())
     }
 }

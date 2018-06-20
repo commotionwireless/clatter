@@ -21,7 +21,7 @@ use broadcast;
 use error::{Error, Result};
 use frame::Frame;
 use interface::{BoxInterface, Interface};
-use packet::Packet;
+use message::Message;
 use qos::{self, QueuedState};
 use routing;
 use socket::Socket;
@@ -52,14 +52,14 @@ impl Future for Ticker {
             .for_each(|_| {
                 let mut proto = proto.lock().unwrap();
                 for frame in proto.poll_interfaces() {
-                    let src = *frame.header().src();
+                    let tx = *frame.header().tx();
                     let iface = frame.header().iface();
-                    proto.routes.seen_tx(&src, iface);
-                    for mut p in frame {
-                        p.ttl_decrement();
+                    proto.routes.seen_tx(&tx, iface);
+                    for mut m in frame {
+                        m.ttl_decrement();
                         let _ = proto
-                            .handle_packet(p, Some(&src))
-                            .map_err(|e| error!("Error handling packet: {:?}", e));
+                            .handle_message(m, Some(&tx))
+                            .map_err(|e| error!("Error handling message: {:?}", e));
                     }
                 }
                 let _ = proto
@@ -89,11 +89,11 @@ pub(crate) struct SocketInfo {
     port: u32,
     broadcast: bool,
     seq: i8,
-    incoming: UnboundedSender<Packet>,
+    incoming: UnboundedSender<Message>,
 }
 
 impl SocketInfo {
-    fn new(port: u32) -> (SocketInfo, UnboundedReceiver<Packet>) {
+    fn new(port: u32) -> (SocketInfo, UnboundedReceiver<Message>) {
         let (sender, receiver) = mpsc::unbounded();
         let info = SocketInfo {
             port: port,
@@ -307,13 +307,13 @@ impl ProtocolInfo {
         for (index, info) in interfaces {
             debug!("Polling interface {}.", index);
             while let Ok(Async::Ready(Some(frame))) = info.iface.poll() {
-                let src = *frame.header().src();
-                if src == self.default_addr {
+                let tx = *frame.header().tx();
+                if tx == self.default_addr {
                     debug!("Dropping frame originating from us.");
                     continue;
                 }
                 if !self.routes.is_duplicate_frame(
-                    src,
+                    tx,
                     frame.header().iface(),
                     frame.header().seq(),
                 ) {
@@ -374,7 +374,7 @@ impl ProtocolInfo {
             }
         });
         if !buf.is_empty() {
-            let packet = Packet::new(
+            let message = Message::new(
                 (ADDR_EMPTY, PORT_LINKSTATE),
                 (ADDR_BROADCAST, PORT_LINKSTATE),
                 ADDR_EMPTY,
@@ -384,12 +384,12 @@ impl ProtocolInfo {
                 false,
                 &mut buf,
             );
-            outgoing.schedule(packet, -1, SEND_DELAY_MS)?;
+            outgoing.schedule(message, -1, SEND_DELAY_MS)?;
         }
         Ok(())
     }
 
-    fn send_via(&mut self, iface: i8, packet: Packet) -> Result<Option<Packet>> {
+    fn send_via(&mut self, iface: i8, message: Message) -> Result<Option<Message>> {
         let default_addr = self.default_addr;
         if iface == -1 {
             let mut any_sent = false;
@@ -397,26 +397,26 @@ impl ProtocolInfo {
                 .iter_mut()
                 .enumerate()
                 .for_each(|(i, ref mut info)| {
-                    let mut packet = packet.clone();
-                    if packet.src() == &ADDR_EMPTY {
+                    let mut message = message.clone();
+                    if message.src() == &ADDR_EMPTY {
                         trace!("Setting empty message src to default tx.");
-                        packet.set_src(&default_addr)
+                        message.set_src(&default_addr)
                     }
                     if let Ok(AsyncSink::Ready) =
                         info.iface
-                            .start_send(Frame::encap(packet, default_addr, i as i8, -1))
+                            .start_send(Frame::encap(message, default_addr, i as i8, -1))
                     {
                         any_sent = true;
                     }
                 });
             if !any_sent {
-                Ok(Some(packet))
+                Ok(Some(message))
             } else {
                 Ok(None)
             }
         } else if let Some(ref mut info) = self.ifaces.get_mut(iface as usize) {
             match info.iface
-                .start_send(Frame::encap(packet, default_addr, iface, -1))
+                .start_send(Frame::encap(message, default_addr, iface, -1))
             {
                 Ok(AsyncSink::Ready) => Ok(None),
                 Ok(AsyncSink::NotReady(frame)) => {
@@ -433,50 +433,50 @@ impl ProtocolInfo {
         }
     }
 
-    fn handle_packet(
+    fn handle_message(
         &mut self,
-        mut packet: Packet,
-        encap_src: Option<&Addr>,
-    ) -> Result<Option<Packet>> {
-        let local = encap_src.is_none();
-        let src = *packet.src();
-        let seq = packet.seq();
-        if !local && self.routes.is_duplicate_packet(src, seq) {
+        mut message: Message,
+        tx: Option<&Addr>,
+    ) -> Result<Option<Message>> {
+        let local = tx.is_none();
+        let src = *message.src();
+        let seq = message.seq();
+        if !local && self.routes.is_duplicate_message(src, seq) {
             debug!("Dropping duplicate message #{} from {:?}.", seq, src);
             return Ok(None);
         }
-        let dst = *packet.dst();
-        let ttl = packet.ttl();
+        let dst = *message.dst();
+        let ttl = message.ttl();
         if dst == ADDR_BROADCAST {
             trace!("Handling broadcast message.");
-            //is a broadcast packet
-            let bid = *packet.bid();
+            //is a broadcast message
+            let bid = *message.bid();
             if !self.broadcast_ids.recent(&bid) {
-                if let Some(port) = packet.dst_port() {
+                if let Some(port) = message.dst_port() {
                     debug!(
                         "Handling non-duplicate broadcast message ID# {:?} for port {}.",
                         bid, port
                     );
-                    if !packet.is_local() {
+                    if !message.is_local() {
                         trace!("Searching for local broadcast sockets.");
                         for s in &mut self.sockets {
                             if s.broadcast && s.port == port {
                                 debug!("Delivering broadcast message to port {}.", port);
-                                let _ = s.incoming.unbounded_send(packet.clone()).map_err(|e| {
+                                let _ = s.incoming.unbounded_send(message.clone()).map_err(|e| {
                                     error!("Error sending message to socket: {:?}", e)
                                 });
                             }
                         }
                     }
                 } else {
-                    error!("Received an encrypted or malformed broadcast packet, dropping.");
+                    error!("Received an encrypted or malformed broadcast message, dropping.");
                     return Ok(None);
                 }
                 if ttl >= 1 {
-                    if let Some(tx) = encap_src {
+                    if let Some(tx) = tx {
                         if self.routes.forward_broadcasts(tx) {
                             debug!("Forwarding broadcast message ID# {:?}.", bid);
-                            self.outgoing.schedule(packet, -1, SEND_DELAY_MS)?;
+                            self.outgoing.schedule(message, -1, SEND_DELAY_MS)?;
                             Ok(None)
                         } else {
                             debug!("We are not currently forwarding broadcasts for {:?}, dropping message.", &tx);
@@ -484,11 +484,11 @@ impl ProtocolInfo {
                         }
                     } else {
                         debug!("Sending broadcast message ID# {:?}.", bid);
-                        self.outgoing.schedule(packet, -1, SEND_DELAY_MS)?;
+                        self.outgoing.schedule(message, -1, SEND_DELAY_MS)?;
                         Ok(None)
                     }
                 } else {
-                    debug!("Not forwarding broadcast packet with ttl < 1.");
+                    debug!("Not forwarding broadcast message with ttl < 1.");
                     Ok(None)
                 }
             } else {
@@ -498,7 +498,7 @@ impl ProtocolInfo {
         } else if self.routes.is_local(&dst) {
             trace!("Handling message for local destination.");
             if let Some(indices) = self.socket_indices.get_mut(&dst) {
-                match packet.dst_port() {
+                match message.dst_port() {
                     Some(port) => for i in indices.iter() {
                         if let Some(ref mut s) = self.sockets.get_mut(*i) {
                             if port == s.port {
@@ -506,7 +506,7 @@ impl ProtocolInfo {
                                     "Received message for local address {:?} on port {}.",
                                     src, port
                                 );
-                                let _ = s.incoming.unbounded_send(packet).map_err(|e| {
+                                let _ = s.incoming.unbounded_send(message).map_err(|e| {
                                     error!("Error sending message to socket: {:?}", e)
                                 });
                                 return Ok(None);
@@ -514,11 +514,11 @@ impl ProtocolInfo {
                         }
                     },
                     None => {
-                        //packet isn't decrypted, pass it off to the first socket we can to decrypt
+                        //message isn't decrypted, pass it off to the first socket we can to decrypt
                         if let Some(ref mut s) = self.sockets.get_mut(indices[0]) {
                             debug!("Received message for local address {:?}, sending to port {} for decryption.", src, s.port);
                             let _ = s.incoming
-                                .unbounded_send(packet)
+                                .unbounded_send(message)
                                 .map_err(|e| error!("Error sending message to socket: {:?}", e));
                         }
                     }
@@ -534,10 +534,10 @@ impl ProtocolInfo {
                 if self.routes.is_dirty() {
                     self.routes.find_next_hops();
                 }
-                let rx = self.routes.next_hop(packet.dst());
+                let rx = self.routes.next_hop(message.dst());
                 if let Some((next_hop, iface)) = rx {
-                    packet.set_rx(&next_hop);
-                    self.outgoing.schedule(packet, iface, SEND_DELAY_MS)?;
+                    message.set_rx(&next_hop);
+                    self.outgoing.schedule(message, iface, SEND_DELAY_MS)?;
                     Ok(None)
                 } else {
                     debug!("Dropping message without valid receiver.");
@@ -551,7 +551,7 @@ impl ProtocolInfo {
         //drop
     }
 
-    fn flush_outgoing(&mut self) -> Result<Option<Packet>> {
+    fn flush_outgoing(&mut self) -> Result<Option<Message>> {
         trace!("Outgoing queue length: {}", self.outgoing.len());
         while let Some((mut msg, info)) = self.outgoing.next() {
             trace!("Popping outgoing queue.");
@@ -676,8 +676,8 @@ impl ProtocolInfo {
         Ok(None)
     }
 
-    pub fn try_send(&mut self, packet: Packet) -> Result<Option<Packet>> {
-        self.handle_packet(packet, None)
+    pub fn try_send(&mut self, message: Message) -> Result<Option<Message>> {
+        self.handle_message(message, None)
     }
 
     pub(crate) fn socket_info(&mut self, id: usize) -> Option<&mut SocketInfo> {

@@ -11,13 +11,13 @@ pub enum Error {
     ParseError(nom::ErrorKind),
     ParseIncomplete(nom::Needed),
     EncodeError(GenError),
-    PacketNeedsPlain,
-    PacketNeedsEncrypted,
-    PacketNeedsSigned,
+    MessageNeedsPlain,
+    MessageNeedsEncrypted,
+    MessageNeedsSigned,
     FrameFull,
     FrameTooLarge,
-    PacketBadTtl(u8),
-    PacketBadLen(usize),
+    MessageBadTtl(u8),
+    MessageBadLen(usize),
     PayloadDecodeEncrypted,
     Encrypt,
     Decrypt,
@@ -30,7 +30,7 @@ pub enum Error {
     RoutingTableInvalid,
     QueueCongestion,
     AddrAlreadyInUse(SocketAddr),
-    MalformedPacket,
+    MalformedMessage,
     UdpIncompleteSend(usize),
 }
 
@@ -48,31 +48,31 @@ impl fmt::Display for Error {
                     write!(f, "Missing {:?} bytes of data while deserializing.", s)
                 }
             },
-            Error::PacketNeedsPlain => write!(
+            Error::MessageNeedsPlain => write!(
                 f,
                 "Function needs a plaintext frame but was passed some other type."
             ),
-            Error::PacketNeedsEncrypted => write!(
+            Error::MessageNeedsEncrypted => write!(
                 f,
                 "Function needs an encrypted frame but was passed some other type."
             ),
-            Error::PacketNeedsSigned => write!(
+            Error::MessageNeedsSigned => write!(
                 f,
                 "Function needs a signed frame but was passed some other type."
             ),
             Error::FrameFull => write!(
                 f,
-                "The current frame cannot take the specified packet(s) and remain under the MTU."
+                "The current frame cannot take the specified message(s) and remain under the MTU."
             ),
             Error::FrameTooLarge => write!(f, "The current frame is too large for the MTU."),
-            Error::PacketBadTtl(n) => write!(
+            Error::MessageBadTtl(n) => write!(
                 f,
-                "The packet's TTL of {:?} is not within the valid range.",
+                "The message's TTL of {:?} is not within the valid range.",
                 n
             ),
-            Error::PacketBadLen(n) => write!(
+            Error::MessageBadLen(n) => write!(
                 f,
-                "The packet's data length of {:?} is not within the valid range.",
+                "The message's data length of {:?} is not within the valid range.",
                 n
             ),
             Error::PayloadDecodeEncrypted => write!(f, "Error deserializing a decrypted payload."),
@@ -91,9 +91,9 @@ impl fmt::Display for Error {
             Error::RoutingTableInvalid => write!(f, "Invalid or corrupted routing table."),
             Error::QueueCongestion => write!(f, "Outgoing QoS queue is congested."),
             Error::AddrAlreadyInUse(s) => write!(f, "Socket address {:?} already in use.", s),
-            Error::MalformedPacket => write!(f, "Malformed packet detected."),
+            Error::MalformedMessage => write!(f, "Malformed message detected."),
             Error::UdpIncompleteSend(n) => {
-                write!(f, "Was only able to send {:?} bytes of UDP packet.", n)
+                write!(f, "Was only able to send {:?} bytes of UDP message.", n)
             }
         }
     }
@@ -106,21 +106,21 @@ impl error::Error for Error {
             Error::ParseError(ref err) => err.description(),
             Error::EncodeError(_) => "Error while serializing to buffer.",
             Error::ParseIncomplete(_) => "Missing bytes while deserializing.",
-            Error::PacketNeedsPlain => {
+            Error::MessageNeedsPlain => {
                 "Function needs a plaintext frame but was passed some other type."
             }
-            Error::PacketNeedsEncrypted => {
+            Error::MessageNeedsEncrypted => {
                 "Function needs an encrypted frame but was passed some other type."
             }
-            Error::PacketNeedsSigned => {
+            Error::MessageNeedsSigned => {
                 "Function needs a signed frame but was passed some other type."
             }
             Error::FrameFull => {
-                "The current frame cannot take the specified packet(s) and remain under the MTU."
+                "The current frame cannot take the specified message(s) and remain under the MTU."
             }
             Error::FrameTooLarge => "The current frame is too large for the MTU.",
-            Error::PacketBadTtl(_) => "The packet's TTL is not within the valid range.",
-            Error::PacketBadLen(_) => "The packet's data length is not within the valid range.",
+            Error::MessageBadTtl(_) => "The message's TTL is not within the valid range.",
+            Error::MessageBadLen(_) => "The message's data length is not within the valid range.",
             Error::PayloadDecodeEncrypted => "Error deserializing a decrypted payload.",
             Error::Encrypt => "Error encrypting payload.",
             Error::Decrypt => "Error decrypting payload.",
@@ -133,8 +133,8 @@ impl error::Error for Error {
             Error::RoutingTableInvalid => "Invalid or corrupted routing table.",
             Error::QueueCongestion => "Outgoing QoS queue is congested.",
             Error::AddrAlreadyInUse(_) => "Socket address is already in use.",
-            Error::MalformedPacket => "Malformed packet detected.",
-            Error::UdpIncompleteSend(_) => "Was unable to send complete UDP packet.",
+            Error::MalformedMessage => "Malformed message detected.",
+            Error::UdpIncompleteSend(_) => "Was unable to send complete UDP message.",
         }
     }
 
@@ -144,13 +144,13 @@ impl error::Error for Error {
             Error::ParseError(_) => None,
             Error::EncodeError(_) => None,
             Error::ParseIncomplete(_) => None,
-            Error::PacketNeedsPlain => None,
-            Error::PacketNeedsEncrypted => None,
-            Error::PacketNeedsSigned => None,
+            Error::MessageNeedsPlain => None,
+            Error::MessageNeedsEncrypted => None,
+            Error::MessageNeedsSigned => None,
             Error::FrameFull => None,
             Error::FrameTooLarge => None,
-            Error::PacketBadTtl(_) => None,
-            Error::PacketBadLen(_) => None,
+            Error::MessageBadTtl(_) => None,
+            Error::MessageBadLen(_) => None,
             Error::PayloadDecodeEncrypted => None,
             Error::Encrypt => None,
             Error::Decrypt => None,
@@ -163,7 +163,7 @@ impl error::Error for Error {
             Error::RoutingTableInvalid => None,
             Error::QueueCongestion => None,
             Error::AddrAlreadyInUse(_) => None,
-            Error::MalformedPacket => None,
+            Error::MalformedMessage => None,
             Error::UdpIncompleteSend(_) => None,
         }
     }

@@ -113,7 +113,7 @@ impl Payload {
 
     pub fn encrypt<A: Into<Addr>>(&self, to: A, from: &LocalAddr) -> Result<Payload> {
         match *self {
-            Payload::Signed { .. } | Payload::Encrypted { .. } => Err(Error::PacketNeedsPlain),
+            Payload::Signed { .. } | Payload::Encrypted { .. } => Err(Error::MessageNeedsPlain),
             Payload::Plain {
                 src_port,
                 dst_port,
@@ -144,7 +144,7 @@ impl Payload {
     }
     pub fn decrypt<A: Into<Addr>>(&self, to: &LocalAddr, from: A) -> Result<Payload> {
         match *self {
-            Payload::Signed { .. } | Payload::Plain { .. } => Err(Error::PacketNeedsEncrypted),
+            Payload::Signed { .. } | Payload::Plain { .. } => Err(Error::MessageNeedsEncrypted),
             Payload::Encrypted {
                 nonce, ref data, ..
             } => match to.decrypt(data, &nonce, from) {
@@ -163,7 +163,7 @@ impl Payload {
 
     pub fn sign(&self, from: &LocalAddr) -> Result<Payload> {
         match *self {
-            Payload::Signed { .. } | Payload::Encrypted { .. } => Err(Error::PacketNeedsPlain),
+            Payload::Signed { .. } | Payload::Encrypted { .. } => Err(Error::MessageNeedsPlain),
             Payload::Plain {
                 src_port,
                 dst_port,
@@ -180,7 +180,7 @@ impl Payload {
     }
     pub fn verify<A: Into<Addr>>(&self, from: A) -> Result<()> {
         match *self {
-            Payload::Plain { .. } | Payload::Encrypted { .. } => Err(Error::PacketNeedsSigned),
+            Payload::Plain { .. } | Payload::Encrypted { .. } => Err(Error::MessageNeedsSigned),
             Payload::Signed {
                 ref data, ref sig, ..
             } => LocalAddr::verify(sig, data, from),
@@ -226,7 +226,7 @@ impl Payload {
 
     pub fn contents(&self) -> Result<&BytesMut> {
         match *self {
-            Payload::Encrypted { .. } => Err(Error::PacketNeedsPlain),
+            Payload::Encrypted { .. } => Err(Error::MessageNeedsPlain),
             Payload::Signed { ref data, .. }
             | Payload::Plain { ref data, .. } => Ok(data),
         }
@@ -234,7 +234,7 @@ impl Payload {
 
     pub fn contents_mut(&mut self) -> Result<&mut BytesMut> {
         match *self {
-            Payload::Encrypted { .. } => Err(Error::PacketNeedsPlain),
+            Payload::Encrypted { .. } => Err(Error::MessageNeedsPlain),
             Payload::Signed { ref mut data, .. } 
             | Payload::Plain { ref mut data, .. } => Ok(data),
         }
@@ -242,7 +242,7 @@ impl Payload {
 
     pub fn take(&mut self) -> Result<BytesMut> {
         match *self {
-            Payload::Encrypted { .. } => Err(Error::PacketNeedsPlain),
+            Payload::Encrypted { .. } => Err(Error::MessageNeedsPlain),
             Payload::Signed { ref mut data, .. } 
             | Payload::Plain { ref mut data, .. } => Ok(data.take()),
         }

@@ -40,7 +40,7 @@ pub mod error;
 mod frame;
 pub mod interface;
 pub mod overlay;
-mod packet;
+mod message;
 mod payload;
 pub mod protocol;
 mod qos;
