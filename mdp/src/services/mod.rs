@@ -50,7 +50,7 @@ impl Future for Routing {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let &mut Routing(ref mut s) = self;
         debug!("Running routing service.");
-        if let Some((links, _, _)) = try_ready!(s.by_ref().poll()) {
+        if let Some((links, _, _, _)) = try_ready!(s.by_ref().poll()) {
             let proto = s.get_ref().proto().clone();
             let mut proto = proto.lock().unwrap();
             for LinkState(rx, tx, version, iface, ack_seq, ack_mask, drop_rate) in links {

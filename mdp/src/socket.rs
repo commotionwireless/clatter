@@ -9,7 +9,7 @@
 //! any particular address/port combination at one time.
 use std::sync::{Arc, Mutex};
 use futures::{prelude::*, sync::mpsc::UnboundedReceiver};
-use addr::{Addr, LocalAddr, SocketAddr, ADDR_EMPTY};
+use addr::{Addr, LocalAddr, SocketAddr, ADDR_BROADCAST, ADDR_EMPTY};
 use bytes::{BufMut, BytesMut};
 use error::Error;
 use message::Message;
@@ -286,7 +286,7 @@ impl Socket {
     /// let mut socket1= proto.bind(&new_addr, 5001).expect("Failed to bind MDP socket.");
     /// let mut text = BytesMut::from(&b"Hello!"[..]);
     /// socket0.send_to_encrypt(&mut text.clone(), (&new_addr, 5001)).expect("Failed to send message");
-    /// if let Ok(Async::Ready((received, from, state))) = socket1.recv_from() {
+    /// if let Ok(Async::Ready((received, from, state, _))) = socket1.recv_from() {
     ///     assert_eq!(text, received);
     ///     assert_eq!(from, SocketAddr::from((&local_addr, 5000)));
     ///     assert_eq!(state, State::Encrypted);
@@ -325,7 +325,7 @@ impl Socket {
     /// let mut socket1= proto.bind(&new_addr, 5001).expect("Failed to bind MDP socket.");
     /// let mut text = BytesMut::from(&b"Hello!"[..]);
     /// socket0.send_to_sign(&mut text.clone(), (&new_addr, 5001)).expect("Failed to send message");
-    /// if let Ok(Async::Ready((received, from, state))) = socket1.recv_from() {
+    /// if let Ok(Async::Ready((received, from, state, _))) = socket1.recv_from() {
     ///     assert_eq!(text, received);
     ///     assert_eq!(from, SocketAddr::from((&local_addr, 5000)));
     ///     assert_eq!(state, State::Signed);
@@ -364,7 +364,7 @@ impl Socket {
     /// let mut socket1= proto.bind(&new_addr, 5001).expect("Failed to bind MDP socket.");
     /// let mut text = BytesMut::from(&b"Hello!"[..]);
     /// socket0.send_to_plain(&mut text.clone(), (&new_addr, 5001)).expect("Failed to send message");
-    /// if let Ok(Async::Ready((received, from, state))) = socket1.recv_from() {
+    /// if let Ok(Async::Ready((received, from, state, _))) = socket1.recv_from() {
     ///     assert_eq!(text, received);
     ///     assert_eq!(from, SocketAddr::from((&local_addr, 5000)));
     ///     assert_eq!(state, State::Plain);
@@ -390,18 +390,20 @@ impl Socket {
     /// [plain]: #method.send_to_plain
     /// [sign]: #method.send_to_sign
     /// [encrypt]: #method.send_to_encrypt
-    pub fn recv_from(&mut self) -> Poll<(BytesMut, SocketAddr, State), Error> {
+    pub fn recv_from(&mut self) -> Poll<(BytesMut, SocketAddr, State, bool), Error> {
         while let Some(mut message) =
             try_ready!(self.incoming.poll().map_err(|_| Error::InvalidSocket))
         {
             trace!("Received message: {:?}", message);
             let state = message.state();
+            let dst_broadcast = *message.dst() == ADDR_BROADCAST;
             match state {
                 State::Plain => {
                     return Ok(Async::Ready((
                         message.take()?,
                         (*message.src(), message.src_port().unwrap()).into(),
-                        state
+                        state,
+                        dst_broadcast
                     )))
                 }
                 State::Signed => {
@@ -409,7 +411,8 @@ impl Socket {
                     return Ok(Async::Ready((
                         message.take()?,
                         (*message.src(), message.src_port().unwrap()).into(),
-                        state
+                        state,
+                        dst_broadcast
                     )));
                 }
                 State::Encrypted => {
@@ -419,7 +422,8 @@ impl Socket {
                             return Ok(Async::Ready((
                                 message.take()?,
                                 (*message.src(), message.src_port().unwrap()).into(),
-                                state
+                                state,
+                                dst_broadcast
                             )));
                         } else {
                             debug!("Decrypted message for a different socket, requeueing it.");
@@ -556,26 +560,27 @@ impl<C> Framed<C> {
 }
 
 impl<C> Stream for Framed<C> where C: Decoder {
-    type Item = (C::Item, SocketAddr, State);
+    type Item = (C::Item, SocketAddr, State, bool);
     type Error = C::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         while let Some(mut message) = try_ready!(self.socket.incoming.poll().map_err(|_| Error::InvalidSocket)) {
             trace!("Received message: {:?}", message);
             let state = message.state();
+            let dst_broadcast = *message.dst() == ADDR_BROADCAST;
             match state {
                 State::Plain => {
                     let src_port = message.src_port().ok_or(Error::MalformedMessage)?;
                     let src = SocketAddr::from((*message.src(), src_port));
                     let item = self.codec.decode(message.contents_mut()?)?.ok_or(Error::MalformedMessage)?;
-                    return Ok(Async::Ready(Some((item, src, state))))
+                    return Ok(Async::Ready(Some((item, src, state, dst_broadcast))))
                 },
                 State::Signed => {
                     message.verify()?;
                     let src_port = message.src_port().ok_or(Error::MalformedMessage)?;
                     let src = SocketAddr::from((*message.src(), src_port));
                     let item = self.codec.decode(message.contents_mut()?)?.ok_or(Error::MalformedMessage)?;
-                    return Ok(Async::Ready(Some((item, src, state))))
+                    return Ok(Async::Ready(Some((item, src, state, dst_broadcast))))
                 },
                 State::Encrypted => {
                     message.decrypt(&self.socket.addr)?;
@@ -584,7 +589,7 @@ impl<C> Stream for Framed<C> where C: Decoder {
                             let src_port = message.src_port().ok_or(Error::MalformedMessage)?;
                             let src = SocketAddr::from((*message.src(), src_port));
                             let item = self.codec.decode(message.contents_mut()?)?.ok_or(Error::MalformedMessage)?;
-                            return Ok(Async::Ready(Some((item, src, state))))
+                            return Ok(Async::Ready(Some((item, src, state, dst_broadcast))))
                         } else {
                             debug!("Decrypted message for a different socket, requeueing it.");
                             let mut proto = self.socket.proto.lock().unwrap();

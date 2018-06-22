@@ -211,7 +211,7 @@ impl Future for Connection {
         match mem::replace(&mut self.inner, ConnectionState::Connected) {
             ConnectionState::Waiting(mut socket) => {
                 match try_ready!(socket.poll()) {
-                    Some(((flags, ack_seq, seq, remaining), dst, state)) => {
+                    Some(((flags, ack_seq, seq, remaining), dst, state, _)) => {
                         if flags.contains(MspFlags::MSP_ACK) && ack_seq == 1
                             && state == State::Encrypted && !self.listening && dst == self.dst
                         {
@@ -296,7 +296,7 @@ impl Stream for Transport {
                 }
             }
         }
-        while let Some(((flags, ack_seq, seq, remaining), dst, state)) = try_ready!(self.inner.poll()) {
+        while let Some(((flags, ack_seq, seq, remaining), dst, state, _)) = try_ready!(self.inner.poll()) {
             if dst != self.dst || state != State::Encrypted {
                 continue;
             }

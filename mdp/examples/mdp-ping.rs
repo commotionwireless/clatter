@@ -58,7 +58,7 @@ fn main() {
         .and_then(|a_sink| {
             println!("[a] send: PING 0");
             let mut i = 0;
-            let a_stream = a_stream.map(move |(msg, _addr, state)| {
+            let a_stream = a_stream.map(move |(msg, _addr, state, _dst_broadcast)| {
                 i += 1;
                 println!("[a] recv: {}", String::from_utf8_lossy(&msg));
                 println!("[a] send: PING {}", i);

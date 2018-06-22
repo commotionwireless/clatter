@@ -49,7 +49,7 @@ fn main() {
     // what they send us and continually send pings
     // let pings = stream::iter((0..5).map(Ok));
     let mut i = -1;
-    let b_stream = b_stream.map(move |(msg, _addr, state)| {
+    let b_stream = b_stream.map(move |(msg, _addr, state, _dst_broadcast)| {
         i += 1;
         println!("[b] recv: {}", String::from_utf8_lossy(&msg));
         println!("[b] send: PONG {}", i);
